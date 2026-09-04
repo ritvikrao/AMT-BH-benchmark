@@ -4,6 +4,7 @@
 #include "defines.h"
 #include "InputFormat.h"
 #include "Timers.h"
+#include "VtkOutput.h"
 #include "charm++.h"
 
 #include <iostream>
@@ -45,6 +46,9 @@ struct Parameters {
   // Bit per Phase; see Timers.h. 0 means no timing at all.
   int timerMask;
 
+  // ParaView snapshots; disabled unless a prefix was given. See VtkOutput.h.
+  OutputConfig output;
+
   //int branchFactor;
 
   void pup(PUP::er &p){
@@ -66,6 +70,7 @@ struct Parameters {
     p | cacheLineSize;
     p | iterations;
     p | timerMask;
+    p | output;
   }
 
   void extractParameters(int argc, char **argv, map<string,string> &tab){

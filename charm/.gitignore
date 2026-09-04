@@ -24,6 +24,11 @@ conv-host
 *.bin
 *.csv
 
+# ParaView snapshots
+*.vtp
+*.pvtp
+*.pvd
+
 # Projections traces
 *.log
 *.sts

@@ -1133,6 +1133,15 @@ void DataManager::advance(CkReductionMsg *msg){
     return;
   }
 
+  // Before the integrator, not after: what is written is the state the
+  // traversal just computed forces for, so positions, velocities,
+  // accelerations and potentials in a frame all belong to t = iteration*dtime.
+  if(globalParams.output.writeThisStep(iteration)){
+    timers.start(PHASE_OUTPUT);
+    writeSnapshot();
+    timers.stop(PHASE_OUTPUT);
+  }
+
   BoundingBox myBox;
   kickDriftKick(myBox.box,myBox.kineticEnergy,myBox.potentialEnergy);
 
@@ -1327,6 +1336,39 @@ void DataManager::checkTraversalMass(){
   seen.clear();
 }
 #endif
+
+// One ParaView snapshot of this PE's particles. Every PE writes its own piece
+// with no communication and no gather; PE 0 additionally writes the two small
+// index files that tie the pieces together. The piece names are derived from
+// the step and PE numbers, so PE 0 can name them all without hearing from
+// anyone -- it may well write the index before the pieces themselves exist,
+// which is harmless, since nothing reads these until the run is over.
+void DataManager::writeSnapshot(){
+  const OutputConfig &out = globalParams.output;
+  const std::string stem = vtkStepStem(out.prefix, iteration);
+
+  std::string err;
+  if(!writeVtkPiece(vtkPieceName(stem, CkMyPe()), myParticles.getVec(),
+                    myNumParticles, CkMyPe(), err)){
+    // A missing directory is the overwhelmingly likely cause, and silently
+    // producing an unopenable dataset after a long run is worse than stopping.
+    CkPrintf("(%d) output: %s\n", CkMyPe(), err.c_str());
+    CkAbort("cannot write ParaView output\n");
+  }
+
+  if(CkMyPe() != 0) return;
+
+  writtenSteps.push_back(iteration);
+
+  // The collection is rewritten, not appended to, so that a run stopped part
+  // way through still leaves a .pvd naming exactly the frames that exist.
+  if(!writeVtkParallelIndex(stem + ".pvtp", stem, CkNumPes(), err) ||
+     !writeVtkCollection(out.prefix + ".pvd", out.prefix, writtenSteps,
+                         globalParams.dtime, err)){
+    CkPrintf("(%d) output: %s\n", CkMyPe(), err.c_str());
+    CkAbort("cannot write ParaView output\n");
+  }
+}
 
 void DataManager::kickDriftKick(OrientedBox<Real> &box, Real &kineticEnergy, Real &potentialEnergy){
   Particle *pstart = myParticles.getVec();

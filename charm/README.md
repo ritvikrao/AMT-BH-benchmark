@@ -88,6 +88,8 @@ Options take the form `-<name>=<value>`:
 | `chunkdepth` | subtree depth to fetch per remote request | 3 |
 | `yield` | buckets processed before yielding the PE | 5 |
 | `timers` | phases to time: `all`, `none`, or a comma-separated list | `all` |
+| `output` | path prefix for ParaView snapshots; open `<prefix>.pvd` | none (no output) |
+| `outputfreq` | write a snapshot every Nth step | 1 |
 
 `p` is a budget, not a prediction. The splitters cut the Morton key space at
 midpoints rather than at medians, so how many leaves the refinement needs
@@ -205,9 +207,10 @@ Output is one machine-readable line per step, then a summary:
 `mean` averages over PEs, so the gap between them is the imbalance. `input`
 happens once, before step 0, so it has no per-step or share figure.
 
-`output` and `loadbalancing` are in the schema but read zero: neither phase
-exists yet. They are listed anyway so the table has the same shape across
-implementations and it is visible what is missing.
+`output` reads zero unless `-output=` was given. `loadbalancing` is in the
+schema but reads zero always: that phase does not exist yet. It is listed
+anyway so the table has the same shape across implementations and it is
+visible what is missing.
 
 Overhead is not distinguishable from run-to-run variation: 100k bodies, 20
 steps, 4 PEs, eight interleaved runs each gave 2.77 s with `-timers=all` and
@@ -218,6 +221,62 @@ group.
 `-DSTATISTICS` prints (`prev time`); the two agree to within a millisecond. On
 one PE `other` is 0.2% of the step, which is the evidence that the phase
 brackets are tight and nothing significant falls between them.
+
+## ParaView output
+
+Section 6 of the specification asks for output ParaView can read. `-output=`
+turns it on and names a path prefix; without it nothing is written at all.
+
+```
+./barnes +p4 -in=particles.bin -killat=100 -outputfreq=10 -output=run/bh
+```
+
+That writes `run/bh.pvd`. **Open the `.pvd`** — it is the animation, and the
+other two levels of file exist to serve it:
+
+| File | What it is |
+| --- | --- |
+| `<prefix>.pvd` | the collection: every snapshot and the simulation time it holds |
+| `<prefix>_<step>.pvtp` | one snapshot: the pieces it is made of |
+| `<prefix>_<step>_pe<n>.vtp` | one PE's particles, written by that PE |
+
+Every PE writes its own piece. Nothing is gathered and nothing is
+communicated: the piece names follow from the step and PE numbers, so PE 0 can
+write the two index files without hearing from anybody. The prefix may contain
+a directory, but the directory has to exist — a snapshot that cannot be
+written aborts the run rather than leaving a dataset that will not open.
+
+Each particle carries `mass`, `velocity`, `acceleration`, `potential`, `key`
+and `pe`. The last two are not physics. `key` is the particle's Morton key, so
+colouring by it draws the space-filling curve the decomposition sorts along;
+`pe` is which PE owned the particle at that step, so colouring by it shows the
+decomposition itself, which is the thing worth looking at in an AMT comparison.
+
+Point data is written as raw little-endian binary in VTK's appended-data
+section rather than as text: a text `.vtp` is about three times the size and
+much slower to write, and the output phase is timed. Files are self-describing
+either way — the `Real` width this build was compiled with does not reach the
+file, since everything is written as the type the header declares.
+
+**A snapshot is the state the forces were computed from.** The write happens
+before the integrator runs, so the positions, velocities, accelerations and
+potentials in one frame all belong to the same instant, `t = step*dtime`.
+That is also why there is no frame after the final step: the final positions
+exist, but no forces were ever computed for them, and a frame whose fields are
+half valid is worse than no frame. A run of `killat=10` gives ten frames,
+`t = 0` to `t = 9*dtime`.
+
+Cost, at 100k bodies on 4 PEs writing every step: 108 bytes per particle per
+snapshot (10.8 MB), and 25-45 ms of the ~590 ms step, which does not move
+whole-step time outside its run-to-run spread. It is off by default all the
+same — a hundred steps of a million bodies is 10 GB.
+
+The files are verified by reading them back with ParaView's own reader
+(`pvpython`, ParaView 6.2): point and cell counts, all six point arrays with
+the declared types, total mass exactly 1.0, and centre of mass at 1e-15 in the
+first frame. Empty pieces — a PE that owns no particles — produce valid
+zero-point files that the reader accepts and contributes nothing from. Turning
+output on does not change results.
 
 ## Correctness
 
@@ -288,7 +347,12 @@ infinite, so it is easy to miss.
 Working: distributed tree build and traversal, SFC decomposition rebalanced
 every step, configurable leaf size, energy tracking.
 
-Not yet implemented: ParaView output, load-balancing controls.
+Not yet implemented: load-balancing controls.
+
+Visible in the ParaView output, and not yet addressed: the decomposition
+leaves whole PEs empty. On the 100k input at 4 PEs the particles land 39753 /
+39063 / 21184 / 0, and at 8 PEs the last two PEs get nothing at all. Colouring
+a snapshot by `pe` shows it immediately. This is the next thing to fix.
 
 Two pre-existing correctness bugs in the distributed traversal were fixed; both
 were invisible on one PE, which is why they had survived. On the 10k input at

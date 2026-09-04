@@ -28,6 +28,11 @@
 #define DEFAULT_YIELD_PERIOD 5
 #define DEFAULT_TREE_PIECES_PER_PROC 8
 
+// ParaView snapshots are off unless -output= names a prefix: a full-frequency
+// run writes about 100 bytes per particle per step, which is not something a
+// benchmark should do by default. Once enabled, every step is written.
+#define DEFAULT_OUTPUT_FREQ 1
+
 // Every phase timed by default. -timers=none turns the instrumentation off
 // entirely, including the end-of-run reduction that reports it.
 #define DEFAULT_TIMERS "all"

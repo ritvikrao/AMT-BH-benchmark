@@ -16,6 +16,7 @@
 class TreePiece;
 
 #include <map>
+#include <vector>
 using namespace std;
 
 class TreePieceCounter : public CkLocIterator {            
@@ -82,6 +83,10 @@ class DataManager : public CBase_DataManager {
   // Per-phase wall clock for this PE. Reduced once, after the final step.
   PhaseTimers timers;
 
+  // ParaView output: the steps snapshotted so far. PE 0 alone keeps this, to
+  // rewrite the .pvd collection after each snapshot.
+  std::vector<int> writtenSteps;
+
   bool firstSplitterRound;
 
   Node<NodeDescriptor> *sortingRoot;
@@ -140,6 +145,8 @@ class DataManager : public CBase_DataManager {
 #endif
 
   void kickDriftKick(OrientedBox<Real> &box, Real &kineticEnergy, Real &potentialEnergy);
+
+  void writeSnapshot();
 
   void loadParticlesBinary(const CkCallback &cb);
   void loadParticlesCsv(const CkCallback &cb);

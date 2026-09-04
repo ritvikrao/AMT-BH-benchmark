@@ -128,6 +128,24 @@ void Main::setParameters(CkArgMsg *m){
   }
   CkPrintf("timers: %s\n", timerSpec.c_str());
 
+  globalParams.output.prefix = params.getsparam("output", table);
+  globalParams.output.frequency =
+      params.getiparam("outputfreq", DEFAULT_OUTPUT_FREQ, table);
+  if(globalParams.output.enabled() && globalParams.output.frequency < 1){
+    CkPrintf("[Main] -outputfreq=%d: must be at least 1\n",
+             globalParams.output.frequency);
+    CkAbort("bad command line arguments\n");
+  }
+  if(globalParams.output.enabled()){
+    CkPrintf("output: %s.pvd every %d step%s\n",
+             globalParams.output.prefix.c_str(),
+             globalParams.output.frequency,
+             globalParams.output.frequency == 1 ? "" : "s");
+  }
+  else{
+    CkPrintf("output: none\n");
+  }
+
   getNumParticles();
 
   it = table.find("p");
@@ -426,6 +444,9 @@ void Main::usage(){
   usage["killat"] = "num single steps";
   usage["chunkDepth"] = "when fetching remote data, what depth of subtree to fetch";
   usage["yield"] = "how many buckets to process before yielding processor";
+  usage["output"] = "write ParaView snapshots with this path prefix, giving "
+                    "<prefix>.pvd to open; omit for no output";
+  usage["outputfreq"] = "write a snapshot every Nth step (default 1)";
   usage["timers"] = "per-phase timing: 'all', 'none', or a comma-separated list of "
                     "input,decomposition,treebuild,traversal,integration,output,"
                     "loadbalancing,other,step";
