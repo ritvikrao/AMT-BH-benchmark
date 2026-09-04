@@ -13,8 +13,12 @@ struct ActiveBinInfo{
   CkVec<NodeDescriptor> counts;
   CkVec<Node<T>*> unrefined;
 
+  // Carry leaves that were not refined this round into the next round's active
+  // set. The decomposition wants this (see processRefine); the local tree
+  // build does not -- there the active set emptying out is what ends the loop.
+  bool keepUnrefined;
 
-  ActiveBinInfo(){
+  ActiveBinInfo(bool keep = false) : keepUnrefined(keep) {
     oldvec = new CkVec<std::pair<Node<T> *, bool> >();
     newvec = new CkVec<std::pair<Node<T> *, bool> >();
   }
@@ -48,35 +52,34 @@ struct ActiveBinInfo{
     counts.push_back(NodeDescriptor(np,node->getKey(),kfirst,klast));
   }
 
+  // Refine the bins named, and -- when keepUnrefined is set -- carry every
+  // other leaf into the next round, so that the active set is the whole leaf
+  // frontier rather than just the leaves created last round.
+  //
+  // The decomposition histogram used to drop the unrefined ones, which is
+  // cheaper: its late rounds then cover only the handful of bins still being
+  // split. But a decision that has to weigh all the leaves against each other,
+  // which is what spending the leftover TreePiece budget in
+  // DataManager::receiveHistogram does, can only see a fraction of them that
+  // way. The extra traffic is one 32-byte descriptor per leaf per round.
   void processRefine(int *binsToRefine, int numBinsToRefine){
     for(int i = 0; i < numBinsToRefine; i++){
-      int bin = binsToRefine[i];
-      (*oldvec)[bin].second = true;
-      Node<T> *node = (*oldvec)[bin].first;
-
-      refine(node);
-
-      Key kfirst, klast;
-
-      std::pair<Node<T>*,bool> pr;
-      pr.second = false;
-      for(int i = 0; i < node->getNumChildren(); i++){
-        Node<T> *child = node->getChild(i);
-        pr.first = child;
-        
-        newvec->push_back(pr);
-        int np = child->getNumParticles();
-        Particle *particles = child->getParticles();
-        if(np > 0){
-          kfirst = particles[0].key;
-          klast = particles[np-1].key;
-        }else{
-          kfirst = klast = Node<T>::getParticleLevelKey(child);
-        }
-        counts.push_back(NodeDescriptor(np,child->getKey(),kfirst,klast));
-      }
+      (*oldvec)[binsToRefine[i]].second = true;
     }
 
+    for(int i = 0; i < oldvec->length(); i++){
+      Node<T> *node = (*oldvec)[i].first;
+
+      if(!(*oldvec)[i].second){
+        if(keepUnrefined) addNewNode(node);
+        continue;
+      }
+
+      refine(node);
+      for(int j = 0; j < node->getNumChildren(); j++){
+        addNewNode(node->getChild(j));
+      }
+    }
   }
 
   virtual void refine(Node<T> *node){

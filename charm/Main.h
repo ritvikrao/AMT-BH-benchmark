@@ -37,6 +37,7 @@ class Main : public CBase_Main {
   void niceExit();
   void reportFinalEnergy(CkReductionMsg *msg);
   void reportPhaseTimers(CkReductionMsg *msg);
+  void reportBalance(CkReductionMsg *msg);
 
   void quiescence();
   void quiescenceExit();

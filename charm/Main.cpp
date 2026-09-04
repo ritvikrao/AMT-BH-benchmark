@@ -328,6 +328,33 @@ void Main::reportPhaseTimers(CkReductionMsg *msg){
   finishReports();
 }
 
+// Particles per PE after the first step's decomposition. Printed as it lands,
+// not held for finishReports(), because it describes the start of the run and
+// is worth seeing while the run is still going.
+void Main::reportBalance(CkReductionMsg *msg){
+  const int *counts = (const int *)msg->getData();
+  const int npes = CkNumPes();
+
+  int total = 0, empty = 0;
+  int lo = counts[0], hi = counts[0];
+  for(int i = 0; i < npes; i++){
+    total += counts[i];
+    if(counts[i] < lo) lo = counts[i];
+    if(counts[i] > hi) hi = counts[i];
+    if(counts[i] == 0) empty++;
+  }
+  const double mean = (double)total/npes;
+
+  CkPrintf("[BALANCE] step 0: %d particles over %d PEs in %d of %d TreePieces; "
+           "min %d max %d mean %.0f, max/mean %.3f",
+           total, npes, counts[npes], globalParams.numTreePieces,
+           lo, hi, mean, mean > 0.0 ? hi/mean : 0.0);
+  if(empty > 0) CkPrintf(", %d PE%s empty", empty, empty == 1 ? "" : "s");
+  CkPrintf("\n");
+
+  delete msg;
+}
+
 // The energy reduction and the timer reduction race each other; whichever
 // lands second does the printing, so the output order is fixed.
 void Main::finishReports(){

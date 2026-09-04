@@ -31,7 +31,7 @@ enum Phase {
   PHASE_TREEBUILD,      // octree construction and moment propagation
   PHASE_TRAVERSAL,      // tree traversal, i.e. the force interactions
   PHASE_INTEGRATION,    // KDK update, energy accumulation, per-step teardown
-  PHASE_OUTPUT,         // ParaView snapshot writing (not implemented yet)
+  PHASE_OUTPUT,         // ParaView snapshot writing
   PHASE_LOADBALANCING,  // AtSync/ResumeFromSync (not implemented yet)
   PHASE_OTHER,          // derived: the part of the step no phase claimed
   PHASE_STEP,           // whole timestep; encloses all of the above but input

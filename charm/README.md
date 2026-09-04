@@ -91,14 +91,43 @@ Options take the form `-<name>=<value>`:
 | `output` | path prefix for ParaView snapshots; open `<prefix>.pvd` | none (no output) |
 | `outputfreq` | write a snapshot every Nth step | 1 |
 
-`p` is a budget, not a prediction. The splitters cut the Morton key space at
-midpoints rather than at medians, so how many leaves the refinement needs
-depends on how clustered the input is -- measured on the bundled generator, from
-about 1.3x `numParticles/ppc` when there are thousands of bins up to about 3.2x
-when there are only a handful. Running out of budget stops the subdivision and
-prints a warning; the decomposition comes out coarser and less even, but the
-run continues and the answers are unaffected, since bucket refinement is driven
-by particle count rather than by TreePiece boundaries.
+`p` is a ceiling, and the decomposition spends all of it. The splitters cut the
+Morton key space at midpoints rather than at medians, so how many leaves the
+`ppc` target alone produces depends on how clustered the input is -- on 100k
+Plummer bodies it is 1277 against a budget of 2016. The refinement then keeps
+splitting its heaviest leaves until the count reaches `p` exactly. That is not
+just tidiness: TreePieces are handed out in index order and Charm++'s default
+map gives each PE a contiguous *block* of indices, so leftover TreePieces are
+not spread thinly over the machine, they are an idle tail of it. See
+[Balance](#balance).
+
+Running out of budget the other way -- the `ppc` target needing more leaves
+than `p` allows -- stops the subdivision and prints a warning. The
+decomposition comes out coarser and less even, but the run continues and the
+answers are unaffected, since bucket refinement is driven by particle count
+rather than by TreePiece boundaries.
+
+## Balance
+
+Every run prints how the decomposition came out, once, after the first step's
+particle exchange:
+
+```
+[BALANCE] step 0: 100000 particles over 4 PEs in 2016 of 2016 TreePieces; min 24768 max 25186 mean 25000, max/mean 1.007
+```
+
+`max/mean` is the imbalance the step time actually pays for, and the TreePiece
+counts say whether the budget was spent. It costs one reduction at the start of
+the run and nothing thereafter.
+
+Balance depends on there being enough TreePieces per PE for their sizes to
+average out, so it degrades on small inputs: 100k bodies give 1.004 / 1.007 /
+1.019 at 2 / 4 / 8 PEs, but 2000 bodies over 8 PEs give 1.44, and raising `-p`
+to 1024 only brings that to 1.21. Equal numbers of leaves is not the same as
+equal numbers of particles, and the Morton curve keeps a cluster's leaves
+together, so a PE holding the dense core holds more work. Splitters chosen at
+particle-count quantiles rather than at key midpoints would fix that; the
+midpoint splitters are what the code does today.
 
 ## Input formats
 
@@ -266,10 +295,9 @@ exist, but no forces were ever computed for them, and a frame whose fields are
 half valid is worse than no frame. A run of `killat=10` gives ten frames,
 `t = 0` to `t = 9*dtime`.
 
-Cost, at 100k bodies on 4 PEs writing every step: 108 bytes per particle per
-snapshot (10.8 MB), and 25-45 ms of the ~590 ms step, which does not move
-whole-step time outside its run-to-run spread. It is off by default all the
-same — a hundred steps of a million bodies is 10 GB.
+Cost, at 100k bodies on 4 PEs writing every step: about 104 bytes per particle
+per snapshot (10.4 MB), and 7.3-8.2 ms of a 74 ms step. It is off by default —
+a hundred steps of a million bodies is 10 GB.
 
 The files are verified by reading them back with ParaView's own reader
 (`pvpython`, ParaView 6.2): point and cell counts, all six point arrays with
@@ -349,10 +377,33 @@ every step, configurable leaf size, energy tracking.
 
 Not yet implemented: load-balancing controls.
 
-Visible in the ParaView output, and not yet addressed: the decomposition
-leaves whole PEs empty. On the 100k input at 4 PEs the particles land 39753 /
-39063 / 21184 / 0, and at 8 PEs the last two PEs get nothing at all. Colouring
-a snapshot by `pe` shows it immediately. This is the next thing to fix.
+*The decomposition left whole PEs empty.* Fixed. The `ppc` target stopped the
+refinement well short of the `-p` budget -- 1277 TreePieces of 2016 on the 100k
+input -- and since Charm++'s default map gives each PE a contiguous block of
+array indices, the unspent top of the array was an idle top of the machine. At
+4 PEs the particles landed 39753 / 39063 / 21184 / **0**; at 8 PEs the last two
+PEs got nothing at all. Colouring a ParaView snapshot by `pe` showed it
+immediately -- three colours for four PEs.
+
+The refinement now spends the whole budget, splitting its heaviest leaves until
+the leaf count reaches `-p` exactly, so there is no idle tail to hand a PE. To
+choose those leaves it has to be able to compare all of them, so a histogram
+round now carries every leaf rather than only the ones split last round; that
+costs one 32-byte descriptor per leaf per round and does not show up in the
+decomposition phase time. On the 100k input, seconds per step over 10 steps:
+
+| PEs | before | after |
+|-----|--------|-------|
+| 1 | 0.1885 | 0.1882 |
+| 2 | 0.1517 | 0.1001 |
+| 4 | 0.0893 | 0.0614 |
+| 8 | 0.0785 | 0.0612 |
+
+The phase table says where it went: at 4 PEs the slowest PE's unclaimed time --
+`other`, which is what idling shows up as -- fell from 86.5 ms per step to 2.7
+ms, and traversal from 86.5 ms to 57.7 ms. Energies are unchanged to all
+printed digits, at every PE count. Note that 4 and 8 PEs now come out the same,
+which is a different problem and still open.
 
 Two pre-existing correctness bugs in the distributed traversal were fixed; both
 were invisible on one PE, which is why they had survived. On the 10k input at

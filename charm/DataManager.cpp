@@ -9,6 +9,7 @@
 
 #include "Request.h"
 
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -38,6 +39,7 @@ void copyMomentsToNode(Node<ForceData> *node, const MomentsExchangeStruct &mes){
 }
 
 DataManager::DataManager() : 
+  activeBins(true),
   numTreePieces(1),
   firstSplitterRound(false),
   decompIterations(0),
@@ -471,6 +473,51 @@ void DataManager::receiveHistogram(CkReductionMsg *msg){
     warnedTreePieceBudget = true;
   }
 
+  // The loop above stops as soon as every bin is under the target, which
+  // normally leaves a good part of the -p budget unspent: 1277 TreePieces of
+  // 2016 on 100k Plummer bodies. That is not just waste. The leaves are handed
+  // to TreePieces 0..numTreePieces-1, and Charm++'s default map gives each PE
+  // a contiguous *block* of array indices, so an unspent top third of the
+  // array is an idle top third of the machine: at 4 PEs one of them got no
+  // particles at all, at 8 PEs two did.
+  //
+  // So spend the rest of the budget. Once no bin wants refining on its own
+  // account, split the heaviest bins that can still be split until the leaf
+  // count reaches -p exactly. The decomposition comes out finer and more even
+  // rather than coarser, and there are no leftover TreePieces for the map to
+  // fill a PE with.
+  //
+  // Cost is one more histogram round in the usual case: the leaf count at most
+  // doubles per round, and the budget is under 2x what the target refinement
+  // already produced.
+  //
+  // A bin whose particles all share one key cannot be split -- every particle
+  // lands in the same child, at every depth -- so those are not candidates. If
+  // too few candidates remain, the budget stays partly unspent; the balance
+  // report prints how many TreePieces were used of how many.
+  if(binsToRefine.length() == 0 && numTreePieces < globalParams.numTreePieces){
+    vector<pair<int,int> > candidates;   // (-numParticles, bin), heaviest first
+    for(int i = 0; i < numRecvdBins; i++){
+      if(descriptors[i].smallestKey != descriptors[i].largestKey){
+        candidates.push_back(make_pair(-descriptors[i].numParticles,i));
+      }
+    }
+
+    int room = globalParams.numTreePieces - numTreePieces;
+    int take = (int)candidates.size() < room ? (int)candidates.size() : room;
+
+    partial_sort(candidates.begin(),candidates.begin()+take,candidates.end());
+
+    // Back into bin order, so the active bins stay in tree order as they do on
+    // every other round.
+    vector<int> extra;
+    for(int i = 0; i < take; i++) extra.push_back(candidates[i].second);
+    sort(extra.begin(),extra.end());
+
+    for(int i = 0; i < take; i++) binsToRefine.push_back(extra[i]);
+    numTreePieces += take*(BRANCH_FACTOR-1);
+  }
+
   int numBinsToRefine = binsToRefine.length();
 
   if(numBinsToRefine > 0){
@@ -639,6 +686,8 @@ void DataManager::processSubmittedParticles(){
 
   myParticles.quickSort();
 
+  if(iteration == 0) reportBalance();
+
   // The particles this PE will own for the rest of the step are now in hand
   // and in key order; everything from here to treeReady() is tree construction.
   timers.stop(PHASE_DECOMPOSITION);
@@ -662,6 +711,26 @@ void DataManager::processSubmittedParticles(){
   }
 
   flushMomentRequests();
+}
+
+// How the decomposition actually came out, reduced once after the first
+// step's exchange. Cheap, and the only way to see the difference between a
+// decomposition that is merely correct and one that is worth putting on more
+// than one PE.
+//
+// Slot p carries PE p's particle count; the slot past the end carries the
+// number of TreePieces the refinement used, which only PE 0 knows -- every
+// other PE contributes 0 there, so the sum leaves PE 0's value standing.
+void DataManager::reportBalance(){
+  int n = CkNumPes()+1;
+  int *counts = new int[n];
+  memset(counts,0,sizeof(int)*n);
+  counts[CkMyPe()] = myNumParticles;
+  if(CkMyPe() == 0) counts[CkNumPes()] = numTreePieces;
+
+  CkCallback cb(CkIndex_Main::reportBalance(NULL),mainProxy);
+  contribute(sizeof(int)*n,counts,CkReduction::sum_int,cb);
+  delete[] counts;
 }
 
 void DataManager::buildTree(){
