@@ -89,6 +89,8 @@ class DataManager : public CBase_DataManager {
 
   int iteration;
   int decompIterations;
+  // Warn once, not once per decomposition round, when -p runs out.
+  bool warnedTreePieceBudget;
   ActiveBinInfo<NodeDescriptor> activeBins;
 
   TreePieceCounter localTreePieces;
@@ -131,6 +133,10 @@ class DataManager : public CBase_DataManager {
 
 #ifdef STATISTICS
   CmiUInt8 numInteractions[3];
+#endif
+
+#ifdef CHECK_TRAVERSAL_MASS
+  void checkTraversalMass();
 #endif
 
   void kickDriftKick(OrientedBox<Real> &box, Real &kineticEnergy, Real &potentialEnergy);

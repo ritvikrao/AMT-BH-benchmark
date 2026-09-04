@@ -8,6 +8,10 @@ INCPATH  = $(CHARM_PATH)/include
 CHARMC   = $(CHARM_PATH)/bin/charmc
 
 # -DSTATISTICS reports interaction counts per iteration.
+# -DCHECK_TRAVERSAL_MASS reports, per step and PE, the range of total mass each
+# bucket interacted with. Exact traversal => every bucket sees the same figure,
+# so any spread is a dropped or duplicated interaction. Off by default; it
+# allocates a map entry per bucket.
 # Other useful toggles: -DVERBOSE_TRAVERSAL -DCHECK_NUM_INTERACTIONS
 #                       -DPRINT_TREE -DDEBUG_TRAVERSALS -DVERBOSE_NODE_REFINE
 APP_FLAGS = -DSTATISTICS
@@ -84,10 +88,17 @@ clean:
 	rm -f core* $(OBJECTS) *~ $(TARGET) *.decl.h *.def.h charmrun conv-host \
 	      gen plummer plummer.o gen_util.o .tracemode
 
-# The one dependency a clean build cannot discover for itself: every
-# translation unit includes barnes.decl.h, which charmc generates from
-# barnes.ci via the pattern rule above.
-$(OBJECTS): barnes.decl.h
+# Header dependencies. Every translation unit includes barnes.decl.h, which
+# charmc generates from barnes.ci via the pattern rule above and which a clean
+# build cannot discover for itself. The wildcard is deliberately coarse -- any
+# header change rebuilds all eight objects -- because the alternative was no
+# header dependencies at all, which meant editing a .h quietly left the old
+# object files in place. Eight files rebuild in seconds; a stale build costs a
+# lot more than that.
+HEADERS = $(wildcard *.h)
+$(OBJECTS): barnes.decl.h $(HEADERS)
+plummer.o gen_util.o: $(HEADERS)
+gen: $(HEADERS)
 
 # Finer-grained header dependencies are optional. `make depends` writes them to
 # Makefile.dep, which is not committed because it records absolute paths into

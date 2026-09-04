@@ -77,7 +77,7 @@ Options take the form `-<name>=<value>`:
 | --- | --- | --- |
 | `in` | input particle file (required) | — |
 | `format` | `csv` or `binary` | inferred from the extension |
-| `p` | number of TreePieces | `2 * numParticles / ppc` |
+| `p` | TreePiece budget | `2 * numParticles / ppc + 16`, at least one per PE |
 | `ppc` | target particles per TreePiece | 100 |
 | `b` | **max particles per leaf (bucket)** | 10 |
 | `theta` | opening angle | 0.5 |
@@ -89,9 +89,14 @@ Options take the form `-<name>=<value>`:
 | `yield` | buckets processed before yielding the PE | 5 |
 | `timers` | phases to time: `all`, `none`, or a comma-separated list | `all` |
 
-`p` must be large enough that the splitter refinement can reach the target
-`ppc`; if it is not, the run aborts with `Need more tree pieces!`. Raising `-p`
-fixes it. (Auto-sizing this is on the list below.)
+`p` is a budget, not a prediction. The splitters cut the Morton key space at
+midpoints rather than at medians, so how many leaves the refinement needs
+depends on how clustered the input is -- measured on the bundled generator, from
+about 1.3x `numParticles/ppc` when there are thousands of bins up to about 3.2x
+when there are only a handful. Running out of budget stops the subdivision and
+prints a warning; the decomposition comes out coarser and less even, but the
+run continues and the answers are unaffected, since bucket refinement is driven
+by particle count rather than by TreePiece boundaries.
 
 ## Input formats
 
@@ -243,8 +248,34 @@ the multipole approximation rather than a bug. A constant offset that does
 *not* close with `theta` is the signature of a real error; that is how the
 self-interaction term described above was found.
 
-Runs on different PE counts produce bit-identical energies as long as the
-decomposition does not refine deeply; see the known issue under Status.
+Forces are bit-identical across PE counts. On the 10k input, 1 / 2 / 4 / 8 PEs
+give the same `E_P` to every printed digit at every `theta` tried, and the same
+node-interaction and particle-interaction counts.
+
+Over several steps the PE counts drift apart, by 1.1e-5 relative at
+`theta=0.5`, 5.6e-7 at `theta=0.1` and 1.1e-7 at `theta=0.05`. That is the
+approximation moving, not an inconsistency: interactions accumulate in a
+different order on a different PE count, so a particle's position can differ in
+its last bit, and a last-bit difference occasionally moves it across a tree
+boundary and changes which multipoles get used. The effect therefore scales
+with the multipole error and vanishes with it. Within a fixed PE count the code
+is deterministic -- repeated runs agree bit for bit.
+
+### The mass invariant
+
+Building with `-DCHECK_TRAVERSAL_MASS` reports, per step and PE, the range of
+total mass each bucket interacted with:
+
+```
+[MASS] step 0 pe 1 buckets 436 interacted mass [1, 1] spread 5.22e-15
+```
+
+Every bucket must interact with the entire system exactly once, so every bucket
+on every PE must land on the same figure; any spread beyond roundoff is an
+interaction being dropped or applied twice. This is a much sharper instrument
+than the energies -- it names the bucket -- and it is what found both of the
+decomposition bugs listed under Status. It is off by default because it
+allocates a map entry per bucket.
 
 Note that `E_P` reported here excludes each particle's interaction with itself.
 The traversal always opens a bucket against itself, so every particle picks up
@@ -257,23 +288,25 @@ infinite, so it is easy to miss.
 Working: distributed tree build and traversal, SFC decomposition rebalanced
 every step, configurable leaf size, energy tracking.
 
-Not yet implemented: ParaView output, load-balancing controls, TreePiece
-auto-sizing. See the repository-level notes.
+Not yet implemented: ParaView output, load-balancing controls.
 
-Known issues in the decomposition, both pre-existing:
+Two pre-existing correctness bugs in the distributed traversal were fixed; both
+were invisible on one PE, which is why they had survived. On the 10k input at
+4 PEs they moved `E_P` by 2.3e-4 relative, and the error grew with the PE count.
 
-*Results depend on the PE count* once the decomposition refines deeply. On the
-same 10k input at `-ppc=100`, particle-particle interaction counts come out
-2413667 / 2250733 / 2163201 on 1 / 2 / 4 PEs -- the tree itself differs. The
-differences are the size of the multipole approximation error rather than
-roundoff. This matters for strong scaling, where the runs being compared should
-be doing the same work. Lowering the default `ppc` to 100 makes this show up in
-the default configuration, where before it was hidden behind a `ppc` so large
-that refinement stopped almost immediately.
+*Unopened Boundary nodes were counted twice.* A Boundary node is the shared
+spine between the local and the remote part of a PE's tree, so both traversals
+keep it -- each has to be able to walk down through it to reach its own leaves.
+But when such a node is not opened, its multipole stands for its whole subtree,
+local and remote alike, and both traversals were applying it. The fix gives the
+approximation to the local traversal and lets the remote one walk past.
 
-*`Need more tree pieces!`* still aborts some runs. The default TreePiece count,
-`2*numParticles/ppc`, allows 2.4x the leaves a perfectly balanced split would
-need, but the splitters cut the Morton key space at midpoints rather than at
-medians, so the real requirement is higher and varies with the input. It is
-usually short by only one or two: `N=700, ppc=100` asks for 15 and is given 14.
-Raising `-p` fixes any individual case.
+*Remote buckets promoted from local nodes were never fetched.* A node built
+over this PE's particles holds a pointer into `myParticles` even when none fall
+inside it: an empty range, but a non-NULL pointer. When the owner's moments
+arrived and retyped the node `RemoteBucket`, `copyMomentsToNode` left that
+stale pointer in place, and `Traversal::processLeaf` reads a non-NULL particle
+pointer as "the particles are already in hand" -- so it skipped the fetch and
+silently dropped every one of them. The other path that turns a node remote,
+`Node::deserialize`, had always cleared the pointer; `copyMomentsToNode` now
+does too.

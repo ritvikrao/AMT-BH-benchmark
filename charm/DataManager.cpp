@@ -24,6 +24,16 @@ void copyMomentsToNode(Node<ForceData> *node, const MomentsExchangeStruct &mes){
   node->data.moments = mes.moments;
   node->data.box = mes.box;
   NodeType type = mes.type;
+
+  // A node built here over this PE's particles keeps a pointer into
+  // myParticles even when none of them fall inside it -- an empty range, but a
+  // non-NULL one. Once the owner's moments say the node is really a bucket
+  // elsewhere, that pointer is stale, and Traversal::processLeaf reads a
+  // non-NULL particle pointer as "the particles are already in hand" and skips
+  // the fetch, silently dropping every one of them from the interaction.
+  // Clear it, exactly as Node::deserialize does on the other path that turns a
+  // node remote.
+  node->setParticles(NULL,0);
   node->setType(Node<ForceData>::makeRemote(type));
 }
 
@@ -40,6 +50,7 @@ DataManager::DataManager() :
   treeMomentsReady(false),
   numTreePiecesDoneTraversals(0),
   csvRangeCounts(NULL),
+  warnedTreePieceBudget(false),
   prevIterationStart(0.0)
 {
 #ifdef STATISTICS
@@ -420,22 +431,44 @@ void DataManager::receiveHistogram(CkReductionMsg *msg){
   CkVec<pair<Node<NodeDescriptor>*,bool> > *active = activeBins.getActive();
   CkAssert(numRecvdBins == active->length());
 
+  // How many leaves the refinement needs is a property of the input: the
+  // splitters cut the Morton key space at midpoints rather than at medians, so
+  // a clustered region keeps splitting long after an even one has stopped.
+  // -p is therefore a budget, not a prediction. Running out of it used to
+  // abort the run outright; instead, stop subdividing and let the remaining
+  // oversized bins through. The result is a coarser, less even decomposition
+  // -- which is worth a warning -- but it is a correct one, and it costs no
+  // accuracy: bucket refinement in buildTree() is driven by particle count,
+  // not by TreePiece boundaries.
+  int overBudget = 0;
+
   for(int i = 0; i < numRecvdBins; i++){
-    if(descriptors[i].numParticles > (Real)(DECOMP_TOLERANCE*globalParams.ppc)){
+    bool wantsRefine =
+        descriptors[i].numParticles > (Real)(DECOMP_TOLERANCE*globalParams.ppc);
+    bool canRefine =
+        numTreePieces + (BRANCH_FACTOR-1) <= globalParams.numTreePieces;
+
+    if(wantsRefine && canRefine){
       // need to refine this bin (partition)
       binsToRefine.push_back(i);
       numTreePieces += (BRANCH_FACTOR-1);
-      if(numTreePieces > globalParams.numTreePieces){
-        CkPrintf("have %d treepieces need %d\n",globalParams.numTreePieces,numTreePieces);
-        CkAbort("Need more tree pieces!\n");
-      }
     }
     else{
+      if(wantsRefine) overBudget++;
       Node<NodeDescriptor> *nd = (*active)[i].first;
       nd->data = descriptors[i];
     }
 
     particlesHistogrammed += descriptors[i].numParticles;
+  }
+
+  if(overBudget > 0 && !warnedTreePieceBudget){
+    CkPrintf("[0] warning: ran out of TreePieces at %d (-p); %d bin%s left above "
+             "the %g-particle target, so the decomposition is coarser than asked "
+             "for. Raise -p to remove this.\n",
+             globalParams.numTreePieces, overBudget, overBudget == 1 ? "" : "s",
+             (double)(DECOMP_TOLERANCE*globalParams.ppc));
+    warnedTreePieceBudget = true;
   }
 
   int numBinsToRefine = binsToRefine.length();
@@ -1056,6 +1089,10 @@ void DataManager::traversalsDone()
 void DataManager::finishIteration(){
   timers.stop(PHASE_TRAVERSAL);
 
+#ifdef CHECK_TRAVERSAL_MASS
+  checkTraversalMass();
+#endif
+
   // can't advance particles here, because other PEs 
   // might not have finished their traversals yet, 
   // and therefore might need my particles
@@ -1263,6 +1300,33 @@ void DataManager::addBucketPartInteractions(Key k, CmiUInt8 pp){
   node->addPartInteractions(pp);
 #endif
 }
+
+#ifdef CHECK_TRAVERSAL_MASS
+// See the note on traversalMass in Worker.h. Reports the spread rather than
+// comparing against a known total, because a PE does not hold one: if the
+// traversal is exact every bucket everywhere lands on the same figure, so any
+// spread at all is the bug.
+void DataManager::checkTraversalMass(){
+  std::map<Key,Real> &seen = traversalMass[CkMyPe()];
+  if(seen.empty()) return;
+
+  Real lo = seen.begin()->second;
+  Real hi = lo;
+  Key loKey = seen.begin()->first;
+  Key hiKey = loKey;
+  for(std::map<Key,Real>::iterator it = seen.begin(); it != seen.end(); ++it){
+    if(it->second < lo){ lo = it->second; loKey = it->first; }
+    if(it->second > hi){ hi = it->second; hiKey = it->first; }
+  }
+
+  CkPrintf("[MASS] step %d pe %d buckets %d interacted mass [%.12g, %.12g] spread %.3g"
+           " (min at key %llu, max at key %llu)\n",
+           iteration, CkMyPe(), (int)seen.size(), lo, hi, (double)(hi-lo),
+           (unsigned long long)loKey, (unsigned long long)hiKey);
+
+  seen.clear();
+}
+#endif
 
 void DataManager::kickDriftKick(OrientedBox<Real> &box, Real &kineticEnergy, Real &potentialEnergy){
   Particle *pstart = myParticles.getVec();

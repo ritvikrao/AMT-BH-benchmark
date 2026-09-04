@@ -106,6 +106,10 @@ void MomentsWorker::setTypeFromChildren(Node<ForceData> *node){
   }
 }
 
+#ifdef CHECK_TRAVERSAL_MASS
+std::map<Key,Real> traversalMass[MAX_TRAVERSAL_MASS_PES];
+#endif
+
 int TraversalWorker::work(Node<ForceData> *node){
   NodeType type = node->getType();
   state->nodeEncountered(currentBucket->getKey(),node);
@@ -124,6 +128,20 @@ int TraversalWorker::work(Node<ForceData> *node){
     return 1;
   }
 
+  // A Boundary node is reached by both traversals, so without this its
+  // multipole -- which covers its remote subtree as well as its local one --
+  // would be applied to the bucket twice. It cannot simply be dropped from one
+  // keep table: both traversals still have to descend through Boundary nodes
+  // to reach their own leaves. Give the approximation to the local traversal
+  // and let the remote one walk past it.
+  if(type == Boundary && !computesUnopenedBoundary()){
+    state->nodeDiscarded(currentBucket->getKey(),node);
+    return 0;
+  }
+
+#ifdef CHECK_TRAVERSAL_MASS
+  traversalMass[CkMyPe()][currentBucket->getKey()] += node->data.moments.totalMass;
+#endif
   int computed = nodeBucketForce(node,currentBucket);
   state->nodeComputed(currentBucket,node->getKey());
   state->incrPartNodeInteractions(currentBucket->getKey(),computed);
@@ -131,6 +149,9 @@ int TraversalWorker::work(Node<ForceData> *node){
 }
 
 void TraversalWorker::work(ExternalParticle *particle){
+#ifdef CHECK_TRAVERSAL_MASS
+  traversalMass[CkMyPe()][currentBucket->getKey()] += particle->mass;
+#endif
   int computed = partBucketForce(particle,currentBucket);
   state->incrPartPartInteractions(currentBucket->getKey(),computed);
 }

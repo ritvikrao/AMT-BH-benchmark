@@ -132,8 +132,22 @@ void Main::setParameters(CkArgMsg *m){
 
   it = table.find("p");
   if(it == table.end()){
-    globalParams.numTreePieces = ((Real)globalParams.numParticles/((Real)globalParams.ppc))*2.0;
-    if(globalParams.numTreePieces == 0) globalParams.numTreePieces = 1;
+    // A budget rather than a prediction. The splitters cut the Morton key
+    // space at midpoints, not at medians, so how many leaves the refinement
+    // needs depends on how clustered the input is. Measured on the bundled
+    // generator, the requirement runs from about 1.3x numParticles/ppc when
+    // there are thousands of bins up to about 3.2x when there are only a
+    // handful -- with few bins there is no averaging out. The additive term is
+    // what covers that small end; the multiplier alone never does.
+    //
+    // Overshooting costs empty TreePieces. Undershooting no longer aborts: the
+    // decomposition just comes out coarser, with a warning.
+    globalParams.numTreePieces =
+        2*(globalParams.numParticles/globalParams.ppc) + 16;
+    // Fewer TreePieces than PEs guarantees idle PEs whatever the decomposition
+    // does.
+    if(globalParams.numTreePieces < CkNumPes())
+      globalParams.numTreePieces = CkNumPes();
   }
   else{
     globalParams.numTreePieces = atoi(it->second.c_str());

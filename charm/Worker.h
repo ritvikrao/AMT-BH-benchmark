@@ -69,6 +69,17 @@ class MomentsWorker : public CutoffWorker<ForceData> {
   void setTypeFromChildren(Node<ForceData> *node);
 };
 
+#ifdef CHECK_TRAVERSAL_MASS
+#include "common.h"
+// Every bucket must end a step having interacted with the entire system, once:
+// the mass it sees directly plus the mass of every node it approximated should
+// come to the total mass, identically for every bucket on every PE. It is the
+// invariant that catches an interaction being dropped or applied twice, which
+// energies alone only hint at. Keyed by bucket, per PE.
+extern std::map<Key,Real> traversalMass[];
+#define MAX_TRAVERSAL_MASS_PES 1024
+#endif
+
 class State;
 class TraversalWorker : public CutoffWorker<ForceData> {
   protected:
@@ -109,6 +120,14 @@ class TraversalWorker : public CutoffWorker<ForceData> {
   
   virtual void done() {}
   virtual bool getKeep(NodeType type) = 0;
+
+  // Both traversals keep Boundary nodes -- a Boundary node is the shared spine
+  // between the local and the remote part of the tree, so each has to be able
+  // to walk down through it. When such a node is *not* opened, though, its
+  // multipole stands for its whole subtree, local and remote alike, and only
+  // one of the two may apply it. The local traversal does; see
+  // TraversalWorker::work.
+  virtual bool computesUnopenedBoundary() const = 0;
 };
 
 class LocalTraversalWorker : public TraversalWorker {
@@ -116,6 +135,7 @@ class LocalTraversalWorker : public TraversalWorker {
   public:
   LocalTraversalWorker() : TraversalWorker() {}
   bool getKeep(NodeType type);
+  bool computesUnopenedBoundary() const { return true; }
 };
 
 class RemoteTraversalWorker : public TraversalWorker {
@@ -124,6 +144,7 @@ class RemoteTraversalWorker : public TraversalWorker {
   RemoteTraversalWorker() : TraversalWorker() {}
   void done();
   bool getKeep(NodeType type);
+  bool computesUnopenedBoundary() const { return false; }
 };
 
 class TreeSizeWorker : public CutoffWorker<ForceData> {
