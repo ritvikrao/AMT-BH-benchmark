@@ -12,6 +12,7 @@
 #include <fstream>
 #include <vector>
 #include <limits.h>
+#include <string.h>
 using namespace std;
 
 CProxy_TreePiece treePieceProxy;
@@ -36,6 +37,8 @@ Main::Main(CkArgMsg *msg){
   CkStartQD(cb);
 
   numQuiescenceRecvd = 0;
+  haveFinalEnergy = false;
+  havePhaseTimers = false;
   delete msg;
 }
 
@@ -112,6 +115,18 @@ void Main::setParameters(CkArgMsg *m){
 
   globalParams.yieldPeriod = params.getiparam("yield", DEFAULT_YIELD_PERIOD, table);
   CkPrintf("yieldPeriod: %d\n", globalParams.yieldPeriod);
+
+  it = table.find("timers");
+  string timerSpec = (it == table.end()) ? string(DEFAULT_TIMERS) : it->second;
+  string badPhase;
+  if(!parsePhaseMask(timerSpec, globalParams.timerMask, badPhase)){
+    CkPrintf("[Main] -timers=: unknown phase '%s'. Expected 'all', 'none', or a "
+             "comma-separated list of:\n[Main]  ", badPhase.c_str());
+    for(int i = 0; i < NUM_PHASES; i++) CkPrintf(" %s", phaseName(i));
+    CkPrintf("\n");
+    CkAbort("bad command line arguments\n");
+  }
+  CkPrintf("timers: %s\n", timerSpec.c_str());
 
   getNumParticles();
 
@@ -261,14 +276,99 @@ void Main::commence(){
 }
 
 void Main::reportFinalEnergy(CkReductionMsg *msg){
-  BoundingBox &universe = *((BoundingBox *)msg->getData());
+  finalEnergy = *((BoundingBox *)msg->getData());
+  delete msg;
+  haveFinalEnergy = true;
+  finishReports();
+}
+
+void Main::reportPhaseTimers(CkReductionMsg *msg){
+  const int n = (int)(msg->getSize()/sizeof(double))/2;
+  const double *data = (const double *)msg->getData();
+  const double npes = (double)CkNumPes();
+
+  phaseMax.assign(data, data+n);
+  phaseMean.resize(n);
+  for(int i = 0; i < n; i++) phaseMean[i] = data[n+i]/npes;
+
+  delete msg;
+  havePhaseTimers = true;
+  finishReports();
+}
+
+// The energy reduction and the timer reduction race each other; whichever
+// lands second does the printing, so the output order is fixed.
+void Main::finishReports(){
+  if(!haveFinalEnergy) return;
+  if(globalParams.timerMask != 0 && !havePhaseTimers) return;
+
   CkPrintf("[ENERGY] step %d E_K %.10g E_P %.10g E_T %.10g\n",
            globalParams.iterations-1,
-           universe.kineticEnergy,
-           universe.potentialEnergy,
-           universe.totalEnergy());
-  delete msg;
+           finalEnergy.kineticEnergy,
+           finalEnergy.potentialEnergy,
+           finalEnergy.totalEnergy());
+
+  if(globalParams.timerMask != 0) printPhaseReport();
+
   niceExit();
+}
+
+void Main::printPhaseReport(){
+  const int steps = globalParams.iterations;
+  const int mask = globalParams.timerMask;
+
+  CkPrintf("[TIMERS] wall clock by phase over %d step%s on %d PE%s, seconds.\n",
+           steps, steps == 1 ? "" : "s",
+           CkNumPes(), CkNumPes() == 1 ? "" : "s");
+  CkPrintf("[TIMERS] 'max' is the slowest PE in that phase, which is what sets "
+           "the critical path;\n");
+  CkPrintf("[TIMERS] 'mean' averages over PEs, so max-mean is the imbalance. No "
+           "barriers were\n");
+  CkPrintf("[TIMERS] added: each PE timed itself and the tables were reduced "
+           "once, after the run.\n");
+
+  // Per-step lines first: the spec's "runtime of one timestep" metric, one
+  // machine-readable line each, listing only the phases that were enabled.
+  for(int s = 0; s < steps; s++){
+    const double *row = &phaseMax[(size_t)s*NUM_PHASES];
+    CkPrintf("[STEP] step %d", s);
+    for(int ph = 0; ph < NUM_PHASES; ph++){
+      if(!(mask & (1 << ph))) continue;
+      if(ph == PHASE_INPUT && s != 0) continue;   // input happens once
+      CkPrintf(" %s %.6f", phaseName(ph), row[ph]);
+    }
+    CkPrintf("\n");
+  }
+
+  CkPrintf("[TIMERS] %-14s %12s %12s %12s %8s\n",
+           "phase", "total(max)", "per step", "total(mean)", "share");
+  for(int ph = 0; ph < NUM_PHASES; ph++){
+    if(!(mask & (1 << ph))) continue;
+
+    double totalMax = 0.0, totalMean = 0.0;
+    for(int s = 0; s < steps; s++){
+      totalMax += phaseMax[(size_t)s*NUM_PHASES + ph];
+      totalMean += phaseMean[(size_t)s*NUM_PHASES + ph];
+    }
+
+    // Shares are of the step total, so input -- which precedes step 0 -- has
+    // none, and neither does step itself.
+    double stepTotal = 0.0;
+    if(mask & (1 << PHASE_STEP)){
+      for(int s = 0; s < steps; s++) stepTotal += phaseMax[(size_t)s*NUM_PHASES + PHASE_STEP];
+    }
+
+    char share[16];
+    if(ph == PHASE_INPUT || ph == PHASE_STEP || stepTotal <= 0.0) strcpy(share, "-");
+    else snprintf(share, sizeof(share), "%.1f%%", 100.0*totalMax/stepTotal);
+
+    char perStep[24];
+    if(ph == PHASE_INPUT) strcpy(perStep, "-");
+    else snprintf(perStep, sizeof(perStep), "%.6f", totalMax/steps);
+
+    CkPrintf("[TIMERS] %-14s %12.6f %12s %12.6f %8s\n",
+             phaseName(ph), totalMax, perStep, totalMean, share);
+  }
 }
 
 void Main::niceExit(){
@@ -312,6 +412,9 @@ void Main::usage(){
   usage["killat"] = "num single steps";
   usage["chunkDepth"] = "when fetching remote data, what depth of subtree to fetch";
   usage["yield"] = "how many buckets to process before yielding processor";
+  usage["timers"] = "per-phase timing: 'all', 'none', or a comma-separated list of "
+                    "input,decomposition,treebuild,traversal,integration,output,"
+                    "loadbalancing,other,step";
   usage["ppc"] = "particleschare";
 
 

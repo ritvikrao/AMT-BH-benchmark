@@ -49,10 +49,12 @@ DataManager::DataManager() :
 #endif
   avgIterationRuntime = 0.0;
   savedEnergy = 0.0;
+  timers.init(globalParams.iterations, globalParams.timerMask);
 }
 
 void DataManager::loadParticles(const CkCallback &cb){
   numRankBits = LOG_BRANCH_FACTOR;
+  timers.start(PHASE_INPUT);
   if(globalParams.inputFormat == INPUT_CSV) loadParticlesCsv(cb);
   else loadParticlesBinary(cb);
 }
@@ -121,6 +123,7 @@ void DataManager::loadParticlesBinary(const CkCallback &cb){
 
   partFile.close();
 
+  timers.stop(PHASE_INPUT);
   contribute(sizeof(BoundingBox),&myBox,BoundingBoxGrowReductionType,cb);
 }
 
@@ -293,6 +296,7 @@ void DataManager::receiveCsvCounts(CkReductionMsg *msg){
   delete[] csvRangeCounts;
   csvRangeCounts = NULL;
 
+  timers.stop(PHASE_INPUT);
   contribute(sizeof(BoundingBox), &myBox, BoundingBoxGrowReductionType,
              loadParticlesCb);
 }
@@ -330,6 +334,10 @@ void DataManager::hashParticleCoordinates(const OrientedBox<Real> &universe){
 }
 
 void DataManager::decompose(const BoundingBox &universe){
+  timers.setStep(iteration);
+  timers.start(PHASE_STEP);
+  timers.start(PHASE_DECOMPOSITION);
+
   hashParticleCoordinates(universe.box);
   myParticles.quickSort();
 
@@ -598,6 +606,11 @@ void DataManager::processSubmittedParticles(){
 
   myParticles.quickSort();
 
+  // The particles this PE will own for the rest of the step are now in hand
+  // and in key order; everything from here to treeReady() is tree construction.
+  timers.stop(PHASE_DECOMPOSITION);
+  timers.start(PHASE_TREEBUILD);
+
   buildTree();
   // add dummy tree piece whose index is larger than
   // that of all others. this is required to mark the
@@ -776,6 +789,9 @@ void DataManager::passMomentsUpward(Node<ForceData> *node){
 // doneTreeBuild: built local tree and sent out requests for remote 
 
 void DataManager::treeReady(){
+  timers.stop(PHASE_TREEBUILD);
+  timers.start(PHASE_TRAVERSAL);
+
   treeMomentsReady = true;
   flushBufferedRemoteDataRequests();
   startTraversal();
@@ -1038,6 +1054,8 @@ void DataManager::traversalsDone()
 }
 
 void DataManager::finishIteration(){
+  timers.stop(PHASE_TRAVERSAL);
+
   // can't advance particles here, because other PEs 
   // might not have finished their traversals yet, 
   // and therefore might need my particles
@@ -1066,6 +1084,7 @@ void DataManager::finishIteration(){
 }
 
 void DataManager::advance(CkReductionMsg *msg){
+  timers.start(PHASE_INTEGRATION);
 
   DtReductionStruct *dtred = (DtReductionStruct *)(msg->getData());
   if(dtred->haveNaN){
@@ -1111,6 +1130,9 @@ void DataManager::advance(CkReductionMsg *msg){
   if(CkMyPe() == 0) delete[] keyRanges;
   else delete rangeMsg;
 
+  timers.stop(PHASE_INTEGRATION);
+  timers.finishStep();
+
   iteration++;
   CkCallback cb;
   if(iteration == globalParams.iterations){
@@ -1121,6 +1143,17 @@ void DataManager::advance(CkReductionMsg *msg){
     if (thisIndex == 0) 
       CkPrintf("(%d) finished all %d iterations with avg time %f\n", CkMyPe(), iteration, avgIterationRuntime/globalParams.iterations);
     contribute(sizeof(BoundingBox),&myBox,BoundingBoxGrowReductionType,cb);
+
+    // The one time anything about timing is communicated: every PE's whole
+    // table, reduced once, now that the run is over.
+    if(timers.enabled()){
+      const int n = timers.numValues();
+      double *buf = new double[2*n];
+      timers.fillReductionBuffer(buf);
+      contribute(2*n*sizeof(double), buf, PhaseTimerReductionType,
+                 CkCallback(CkIndex_Main::reportPhaseTimers(NULL),mainProxy));
+      delete[] buf;
+    }
   }
   else{
     cb = CkCallback(CkIndex_DataManager::recvUnivBoundingBox(NULL),thisProxy);

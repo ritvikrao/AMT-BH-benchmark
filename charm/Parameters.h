@@ -3,6 +3,7 @@
 
 #include "defines.h"
 #include "InputFormat.h"
+#include "Timers.h"
 #include "charm++.h"
 
 #include <iostream>
@@ -41,6 +42,9 @@ struct Parameters {
 
   int iterations;
 
+  // Bit per Phase; see Timers.h. 0 means no timing at all.
+  int timerMask;
+
   //int branchFactor;
 
   void pup(PUP::er &p){
@@ -61,6 +65,7 @@ struct Parameters {
     p | theta;
     p | cacheLineSize;
     p | iterations;
+    p | timerMask;
   }
 
   void extractParameters(int argc, char **argv, map<string,string> &tab){

@@ -19,7 +19,7 @@ conv-host
 
 # Generated input data
 *.bin
-particles.csv
+*.csv
 
 # Projections traces
 *.log

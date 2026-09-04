@@ -18,4 +18,8 @@
 #define DEFAULT_CHUNK_DEPTH 3
 #define DEFAULT_YIELD_PERIOD 5
 #define DEFAULT_TREE_PIECES_PER_PROC 8
+
+// Every phase timed by default. -timers=none turns the instrumentation off
+// entirely, including the end-of-run reduction that reports it.
+#define DEFAULT_TIMERS "all"
 #endif

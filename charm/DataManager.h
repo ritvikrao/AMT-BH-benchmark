@@ -11,6 +11,7 @@
 
 #include "Traversal_decls.h"
 #include "Request.h"
+#include "Timers.h"
 
 class TreePiece;
 
@@ -77,6 +78,9 @@ class DataManager : public CBase_DataManager {
   // callback and the per-byte-range record counts have to outlive phase 1.
   CkCallback loadParticlesCb;
   int *csvRangeCounts;
+
+  // Per-phase wall clock for this PE. Reduced once, after the final step.
+  PhaseTimers timers;
 
   bool firstSplitterRound;
 

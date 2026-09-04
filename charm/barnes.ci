@@ -41,6 +41,7 @@ mainmodule barnes {
     entry [threaded] void commence();
     entry void niceExit();
     entry void reportFinalEnergy(CkReductionMsg *msg);
+    entry void reportPhaseTimers(CkReductionMsg *msg);
     entry void quiescence();
     entry void quiescenceExit();
   };
