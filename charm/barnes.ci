@@ -63,6 +63,7 @@ mainmodule barnes {
   group DataManager {
     entry DataManager();
     entry void loadParticles(CkCallback &cb);
+    entry void receiveCsvCounts(CkReductionMsg *msg);
     entry void decompose(BoundingBox &universe);
     entry void receiveHistogram(CkReductionMsg *msg);
     entry void receiveSplitters(SplitterMsg *msg);

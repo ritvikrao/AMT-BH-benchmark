@@ -39,6 +39,7 @@ DataManager::DataManager() :
   doneTreeBuild(false),
   treeMomentsReady(false),
   numTreePiecesDoneTraversals(0),
+  csvRangeCounts(NULL),
   prevIterationStart(0.0)
 {
 #ifdef STATISTICS
@@ -52,7 +53,11 @@ DataManager::DataManager() :
 
 void DataManager::loadParticles(const CkCallback &cb){
   numRankBits = LOG_BRANCH_FACTOR;
+  if(globalParams.inputFormat == INPUT_CSV) loadParticlesCsv(cb);
+  else loadParticlesBinary(cb);
+}
 
+void DataManager::loadParticlesBinary(const CkCallback &cb){
   const char *fname = globalParams.filename.c_str();
   int npart = globalParams.numParticles;
 
@@ -117,6 +122,179 @@ void DataManager::loadParticles(const CkCallback &cb){
   partFile.close();
 
   contribute(sizeof(BoundingBox),&myBox,BoundingBoxGrowReductionType,cb);
+}
+
+// Positions `f` at the start of the first record at or after byte `start`.
+// A record that straddles a byte-range boundary belongs to the range its
+// first byte falls in, so a PE whose range begins mid-line discards that
+// line -- its owner will read it. Returns the byte offset arrived at, or
+// `fileSize` if the seek ran off the end.
+static long seekToRecordStart(std::ifstream &f, long start, long dataOffset,
+                              long fileSize){
+  if(start <= dataOffset){
+    f.clear();
+    f.seekg(dataOffset, ios::beg);
+    return dataOffset;
+  }
+  if(start >= fileSize) return fileSize;
+
+  // If the byte before `start` ends a line then `start` is already a record
+  // boundary; otherwise skip forward over the remainder of the straddling one.
+  f.clear();
+  f.seekg(start-1, ios::beg);
+  char c = '\0';
+  if(!f.get(c)) return fileSize;
+  if(c == '\n') return start;
+
+  std::string discard;
+  if(!std::getline(f, discard)) return fileSize;
+  long pos = (long)f.tellg();
+  return pos < 0 ? fileSize : pos;
+}
+
+// Reads one record into `p`. Returns false for a blank line, which the caller
+// skips without counting.
+static bool parseCsvRecord(const std::string &line, Particle &p){
+  if(isBlankCsvLine(line)) return false;
+
+  Real f[CSV_NUM_FIELDS];
+  if(!globalParams.csv.parseRow(line, f)){
+    std::ostringstream oss;
+    oss << "PE " << CkMyPe() << ": malformed CSV record: " << line << endl;
+    CkAbort("%s", oss.str().c_str());
+  }
+
+  p.mass = f[CSV_MASS];
+  p.position = Vector3D<Real>(f[CSV_POS_X], f[CSV_POS_Y], f[CSV_POS_Z]);
+  p.velocity = Vector3D<Real>(f[CSV_VEL_X], f[CSV_VEL_Y], f[CSV_VEL_Z]);
+  p.acceleration = Vector3D<Real>(0.0);
+  p.potential = 0.0;
+  return true;
+}
+
+// CSV load, phase 1 of 2.
+//
+// Unlike the binary format, a text file gives no way to compute the byte
+// offset of record i, so a PE cannot seek straight to the slice it should own.
+// Each PE instead takes an equal *byte* range and counts the records that
+// begin in it. Rows vary in width -- if nothing else, the id column grows a
+// digit every power of ten -- so those counts are not equal, and phase 2 uses
+// them to recover an exactly even split.
+void DataManager::loadParticlesCsv(const CkCallback &cb){
+  loadParticlesCb = cb;
+
+  const long dataOffset = globalParams.csv.dataOffset;
+  const long fileSize = globalParams.inputFileSize;
+  const long long dataBytes = (long long)(fileSize - dataOffset);
+  const int npes = CkNumPes();
+  const int myid = CkMyPe();
+
+  const long myStart = dataOffset + (long)(dataBytes*myid/npes);
+  const long myEnd = dataOffset + (long)(dataBytes*(myid+1)/npes);
+
+  std::ifstream partFile(globalParams.filename.c_str(), ios::in | ios::binary);
+  CkAssert(partFile.is_open());
+
+  long records = 0;
+  long pos = seekToRecordStart(partFile, myStart, dataOffset, fileSize);
+  std::string line;
+  while(pos < myEnd && std::getline(partFile, line)){
+    if(!isBlankCsvLine(line)) records++;
+    long next = (long)partFile.tellg();
+    pos = (next < 0) ? fileSize : next;   // tellg() is -1 once eof is set
+  }
+  partFile.close();
+
+  // Sum a one-hot vector so that every PE ends up with every PE's count, and
+  // therefore with the same prefix sums. npes ints; this is not the hot path.
+  delete[] csvRangeCounts;
+  csvRangeCounts = new int[npes];
+  for(int i = 0; i < npes; i++) csvRangeCounts[i] = 0;
+  csvRangeCounts[myid] = (int)records;
+
+  contribute(npes*sizeof(int), csvRangeCounts, CkReduction::sum_int,
+             CkCallback(CkIndex_DataManager::receiveCsvCounts(NULL), thisProxy));
+}
+
+// CSV load, phase 2 of 2.
+//
+// `msg` holds record counts per byte range, so prefix[j] is the global index
+// of the first record in PE j's byte range. This PE reads the global range it
+// is owed -- an exactly even slice -- by seeking into whichever byte range
+// contains its first record and reading straight through, past range
+// boundaries as needed. Both ranges are about N/P long, so this touches at
+// most a couple of them: one extra scan, not a redistribution.
+void DataManager::receiveCsvCounts(CkReductionMsg *msg){
+  const int npes = CkNumPes();
+  const int myid = CkMyPe();
+  const int *counts = (const int *)msg->getData();
+
+  CkVec<long> prefix;
+  prefix.resize(npes+1);
+  prefix[0] = 0;
+  for(int i = 0; i < npes; i++) prefix[i+1] = prefix[i] + counts[i];
+  const long total = prefix[npes];
+  delete msg;
+
+  if(total != (long)globalParams.numParticles){
+    std::ostringstream oss;
+    oss << "PE " << CkMyPe() << ": counted " << total
+        << " CSV records but the scan on PE 0 found "
+        << globalParams.numParticles << endl;
+    CkAbort("%s", oss.str().c_str());
+  }
+
+  const long myFirst = (long)(total*(long long)myid/npes);
+  const long myLast = (long)(total*(long long)(myid+1)/npes);
+  myNumParticles = (int)(myLast - myFirst);
+
+  myParticles.reserve(myNumParticles);
+  myParticles.length() = myNumParticles;
+
+  BoundingBox myBox;
+
+  if(myNumParticles > 0){
+    // The byte range holding record myFirst.
+    int range = 0;
+    while(range+1 < npes && prefix[range+1] <= myFirst) range++;
+
+    const long dataOffset = globalParams.csv.dataOffset;
+    const long fileSize = globalParams.inputFileSize;
+    const long long dataBytes = (long long)(fileSize - dataOffset);
+    const long rangeStart = dataOffset + (long)(dataBytes*range/npes);
+
+    std::ifstream partFile(globalParams.filename.c_str(), ios::in | ios::binary);
+    CkAssert(partFile.is_open());
+    seekToRecordStart(partFile, rangeStart, dataOffset, fileSize);
+
+    long toSkip = myFirst - prefix[range];
+    std::string line;
+    while(toSkip > 0 && std::getline(partFile, line)){
+      if(!isBlankCsvLine(line)) toSkip--;
+    }
+    if(toSkip > 0){
+      CkAbort("ran out of CSV records while seeking to this PE's slice\n");
+    }
+
+    int done = 0;
+    while(done < myNumParticles && std::getline(partFile, line)){
+      if(!parseCsvRecord(line, myParticles[done])) continue;
+      myBox.grow(myParticles[done].position);
+      done++;
+    }
+    if(done != myNumParticles){
+      CkAbort("ran out of CSV records while reading this PE's slice\n");
+    }
+    partFile.close();
+  }
+
+  myBox.numParticles = myNumParticles;
+
+  delete[] csvRangeCounts;
+  csvRangeCounts = NULL;
+
+  contribute(sizeof(BoundingBox), &myBox, BoundingBoxGrowReductionType,
+             loadParticlesCb);
 }
 
 void DataManager::hashParticleCoordinates(const OrientedBox<Real> &universe){

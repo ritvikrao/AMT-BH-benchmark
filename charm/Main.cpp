@@ -10,6 +10,8 @@
 
 #include <iostream>
 #include <fstream>
+#include <vector>
+#include <limits.h>
 using namespace std;
 
 CProxy_TreePiece treePieceProxy;
@@ -37,6 +39,11 @@ Main::Main(CkArgMsg *msg){
   delete msg;
 }
 
+static bool hasSuffix(const string &s, const string &suffix){
+  if(s.size() < suffix.size()) return false;
+  return s.compare(s.size()-suffix.size(), suffix.size(), suffix) == 0;
+}
+
 void Main::setParameters(CkArgMsg *m){
   map<string,string> table;
   params.extractParameters(m->argc, m->argv, table); 
@@ -49,6 +56,28 @@ void Main::setParameters(CkArgMsg *m){
   }
 
   globalParams.filename = params.getsparam("in", table);
+
+  it = table.find("format");
+  if(it == table.end()){
+    // No -format given: infer from the extension. A .csv file is the
+    // whitepaper's shared text format; anything else is the bundled binary.
+    globalParams.inputFormat = hasSuffix(globalParams.filename, ".csv")
+                                   ? INPUT_CSV : INPUT_BINARY;
+  }
+  else if(it->second == "csv"){
+    globalParams.inputFormat = INPUT_CSV;
+  }
+  else if(it->second == "binary" || it->second == "bin"){
+    globalParams.inputFormat = INPUT_BINARY;
+  }
+  else{
+    CkPrintf("[Main] unrecognized -format=%s (expected 'csv' or 'binary')\n",
+             it->second.c_str());
+    usage();
+    CkAbort("bad command line arguments\n");
+  }
+  CkPrintf("format: %s\n",
+           globalParams.inputFormat == INPUT_CSV ? "csv" : "binary");
 
   globalParams.theta = params.getrparam("theta", DEFAULT_THETA, table);
   CkPrintf("theta: %f\n", globalParams.theta);
@@ -101,6 +130,86 @@ void Main::setParameters(CkArgMsg *m){
 }
 
 void Main::getNumParticles(){
+  if(globalParams.inputFormat == INPUT_CSV) scanCsvInput();
+  else scanBinaryInput();
+}
+
+// Reads the CSV header (if there is one) to learn which column holds what,
+// then counts records. Both are one-time, PE 0, I/O-bound costs that land
+// before the simulation proper -- the spec excludes input time from the
+// reported metrics.
+void Main::scanCsvInput(){
+  CkPrintf("[Main] file %s\n", globalParams.filename.c_str());
+  ifstream partFile(globalParams.filename.c_str(), ios::in | ios::binary);
+  CkAssert(partFile.is_open());
+
+  CsvLayout &csv = globalParams.csv;
+
+  string firstLine;
+  if(!std::getline(partFile, firstLine)){
+    CkAbort("input file is empty\n");
+  }
+
+  if(CsvLayout::looksLikeHeader(firstLine)){
+    string missing;
+    if(!csv.parseHeader(firstLine, missing)){
+      CkPrintf("[Main] %s: header names no '%s' column. Expected the columns "
+               "of spec v1.0 sec. 5: id,mass,pos_x,pos_y,pos_z,vel_x,vel_y,vel_z\n",
+               globalParams.filename.c_str(), missing.c_str());
+      CkAbort("unusable CSV header\n");
+    }
+    csv.dataOffset = (long)partFile.tellg();
+  }
+  else{
+    // No header. Take the spec's column order on faith, but say so, because
+    // a misordered headerless file would otherwise run and give wrong answers.
+    csv.setSpecOrder();
+    csv.dataOffset = 0;
+    CkPrintf("[Main] no CSV header found; assuming spec column order "
+             "id,mass,pos_x,pos_y,pos_z,vel_x,vel_y,vel_z\n");
+  }
+
+  partFile.clear();
+  partFile.seekg(0, ios::end);
+  globalParams.inputFileSize = (long)partFile.tellg();
+  partFile.seekg(csv.dataOffset, ios::beg);
+
+  // Count records by scanning for line terminators rather than by parsing --
+  // this pass only needs to know how many there are. Blank lines do not
+  // count, matching isBlankCsvLine() in the per-PE readers.
+  const size_t BUFSIZE = 1 << 20;
+  vector<char> buf(BUFSIZE);
+  long long records = 0;
+  bool sawContent = false;
+  while(partFile){
+    partFile.read(&buf[0], BUFSIZE);
+    std::streamsize got = partFile.gcount();
+    for(std::streamsize i = 0; i < got; i++){
+      char c = buf[i];
+      if(c == '\n'){
+        if(sawContent) records++;
+        sawContent = false;
+      }
+      else if(c != '\r'){
+        sawContent = true;
+      }
+    }
+  }
+  if(sawContent) records++;   // last line, unterminated
+
+  partFile.close();
+
+  if(records == 0){
+    CkAbort("input file contains no particle records\n");
+  }
+  if(records > (long long)INT_MAX){
+    CkAbort("more particles than an int can index\n");
+  }
+  globalParams.numParticles = (int)records;
+  CkPrintf("[Main] numParticles %d\n", globalParams.numParticles);
+}
+
+void Main::scanBinaryInput(){
   ifstream partFile;
   CkPrintf("[Main] file %s\n", globalParams.filename.c_str());
   partFile.open(globalParams.filename.c_str(), ios::in | ios::binary);
@@ -194,6 +303,8 @@ string NodeTypeString[] = {
 void Main::usage(){
   map<string,string> usage;
   usage["in"] = "input file";
+  usage["format"] = "input format: 'csv' (id,mass,pos_x,pos_y,pos_z,vel_x,vel_y,vel_z) "
+                    "or 'binary' (./plummer, ./gen). Default: inferred from the extension";
   usage["ppc"] = "particles per chare";
   usage["b"] = "particles per bucket (leaf)";
   usage["theta"] = "opening angle";

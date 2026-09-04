@@ -12,6 +12,8 @@ class Main : public CBase_Main {
   int numQuiescenceRecvd;
 
   void getNumParticles();
+  void scanBinaryInput();
+  void scanCsvInput();
   void setParameters(CkArgMsg *m);
   void usage();
 

@@ -73,6 +73,11 @@ class DataManager : public CBase_DataManager {
   CkVec<Particle> myParticles;
   int myNumParticles;
 
+  // CSV input only: the reader runs in two phases, so the caller's completion
+  // callback and the per-byte-range record counts have to outlive phase 1.
+  CkCallback loadParticlesCb;
+  int *csvRangeCounts;
+
   bool firstSplitterRound;
 
   Node<NodeDescriptor> *sortingRoot;
@@ -126,6 +131,9 @@ class DataManager : public CBase_DataManager {
 
   void kickDriftKick(OrientedBox<Real> &box, Real &kineticEnergy, Real &potentialEnergy);
 
+  void loadParticlesBinary(const CkCallback &cb);
+  void loadParticlesCsv(const CkCallback &cb);
+
   void hashParticleCoordinates(const OrientedBox<Real> &universe);
   void initHistogramParticles();
   void sendHistogram();
@@ -161,6 +169,7 @@ class DataManager : public CBase_DataManager {
   DataManager();
 
   void loadParticles(const CkCallback &cb);
+  void receiveCsvCounts(CkReductionMsg *msg);
 
   void decompose(const BoundingBox &universe);
   void receiveHistogram(CkReductionMsg *msg);

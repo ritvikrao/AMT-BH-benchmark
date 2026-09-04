@@ -8,6 +8,7 @@
 
 #include "Vector3D.h"
 #include "Particle.h"
+#include <string>
 #include <assert.h>
 #include <stdlib.h>
 #include <iostream>
@@ -127,25 +128,21 @@ int intpow(int i, int j)
 
 void pranset(int);
 
-int main(int argc, char **argv){
-  pranset(128363);
-  assert(argc == 3);
-
-  int nbody = atoi(argv[1]);
+/* Writes the binary layout the simulation reads by default: two ints
+ * (nbody, ndims), one Real (tnow), then REALS_PER_PARTICLE Reals per body.  */
+static void writeBinary(const char *fname, Particle *p, int nbody){
   int ndims = 3;
   Real tnow = 0.0;
-  ofstream out(argv[2], ios::out|ios::binary);
-  
-  Particle *p = testdata(nbody);
-  
+  ofstream out(fname, ios::out|ios::binary);
+
   out.write((char *)&nbody, sizeof(int));
   out.write((char *)&ndims, sizeof(int));
   out.write((char *)&tnow, sizeof(Real));
 
   Real tmp[REALS_PER_PARTICLE];
   Real soft = 0.001;
-  
-  for(int i = 0; i < nbody; i++){
+
+  for(int i = 0; i < nbody; i++, p++){
     tmp[0] = p->position.x;
     tmp[1] = p->position.y;
     tmp[2] = p->position.z;
@@ -155,16 +152,56 @@ int main(int argc, char **argv){
     tmp[6] = p->mass;
     tmp[7] = soft;
 
-    cout << p->position.x << " "
-         << p->position.y << " "
-         << p->position.z << endl;
-
     out.write((char*)tmp, REALS_PER_PARTICLE*sizeof(Real));
-
-    p++;
   }
 
   out.close();
+}
+
+/* Writes the benchmark's portable format (spec v1.0 sec. 5), matching the
+ * columns https://github.com/vancraar/DataGenerator emits. Enough digits to
+ * round-trip a double, so the two formats give the same answers.  */
+static void writeCsv(const char *fname, Particle *p, int nbody){
+  ofstream out(fname);
+  out.precision(17);
+
+  out << "id,mass,pos_x,pos_y,pos_z,vel_x,vel_y,vel_z\n";
+  for(int i = 0; i < nbody; i++, p++){
+    out << i << ','
+        << p->mass << ','
+        << p->position.x << ',' << p->position.y << ',' << p->position.z << ','
+        << p->velocity.x << ',' << p->velocity.y << ',' << p->velocity.z << '\n';
+  }
+
+  out.close();
+}
+
+int main(int argc, char **argv){
+  pranset(128363);
+  if(argc < 3 || argc > 4){
+    cerr << "usage: " << argv[0] << " <nbody> <outfile> [binary|csv]" << endl;
+    cerr << "       format defaults to binary" << endl;
+    return 1;
+  }
+
+  int nbody = atoi(argv[1]);
+  string format = (argc == 4) ? string(argv[3]) : string("binary");
+
+  Particle *p = testdata(nbody);
+
+  if(format == "csv"){
+    writeCsv(argv[2], p, nbody);
+  }
+  else if(format == "binary" || format == "bin"){
+    writeBinary(argv[2], p, nbody);
+  }
+  else{
+    cerr << "unrecognized format '" << format << "' (expected binary or csv)" << endl;
+    return 1;
+  }
+
+  cout << "wrote " << nbody << " bodies to " << argv[2]
+       << " as " << format << endl;
 
   return 0;
 }

@@ -2,6 +2,7 @@
 #define __PARAMETERS_H__
 
 #include "defines.h"
+#include "InputFormat.h"
 #include "charm++.h"
 
 #include <iostream>
@@ -15,6 +16,13 @@ using namespace std;
 
 struct Parameters {
   string filename;
+
+  // How to read `filename`. inputFileSize and csv are only meaningful for
+  // INPUT_CSV; Main fills them in once, on PE 0, and they reach every PE
+  // because Parameters is a Charm++ readonly.
+  int inputFormat;
+  long inputFileSize;
+  CsvLayout csv;
 
   Real theta;
   Real G;
@@ -37,6 +45,9 @@ struct Parameters {
 
   void pup(PUP::er &p){
     p | filename;
+    p | inputFormat;
+    p | inputFileSize;
+    p | csv;
     p | numTreePieces;
     p | numParticles;
     p | G;
