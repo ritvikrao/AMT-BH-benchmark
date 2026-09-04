@@ -33,6 +33,28 @@ make CHARM_PATH=/path/to/charm/<target>
 `CHARM_PATH` defaults to `$HOME/charm_reconverse`. This produces three binaries:
 `barnes` (the simulation), and `plummer` / `gen` (input generators).
 
+### Tracing
+
+`TRACE=` links one of Charm++'s trace libraries. Off by default, because the
+trace libraries instrument every entry method and a traced binary is not the
+one the benchmark should be timed on.
+
+```shell
+make TRACE=summary       # per-PE utilization over time (.sum)
+make TRACE=projections   # full event log per PE (.log.gz + .sts)
+make TRACE=none          # the default
+```
+
+Measured on 100k bodies, 20 steps, 4 PEs: 2.54 s untraced, 2.82 s with
+`summary` (+11%), 4.55 s with `projections` (+79%). Keep Projections runs
+short -- a couple of hundred steps -- or the log writes distort what you are
+looking at. Switching `TRACE=` relinks on the next `make`; it is a link-time
+choice, so no recompilation is needed.
+
+Reach for these when the `-timers=` phase report says something is wrong and
+you need to see where. For routine measurements use the phase report, which
+costs nothing.
+
 ## Running
 
 ```shell
@@ -40,7 +62,7 @@ make CHARM_PATH=/path/to/charm/<target>
 ./plummer 10000 particles.csv csv
 
 # Run 10 steps on 4 PEs
-./barnes +p4 -in=particles.csv -p=512 -killat=10
+./barnes +p4 -in=particles.csv -killat=10
 ```
 
 `plummer` writes two half-populations offset from one another, so the result is
@@ -56,7 +78,7 @@ Options take the form `-<name>=<value>`:
 | `in` | input particle file (required) | — |
 | `format` | `csv` or `binary` | inferred from the extension |
 | `p` | number of TreePieces | `2 * numParticles / ppc` |
-| `ppc` | target particles per TreePiece | 1000 |
+| `ppc` | target particles per TreePiece | 100 |
 | `b` | **max particles per leaf (bucket)** | 10 |
 | `theta` | opening angle | 0.5 |
 | `G` | gravitational constant, in the dataset's units | 1.0 |
@@ -205,6 +227,8 @@ Each step reports the energies the whitepaper's Section 6 requires:
 These have been checked against an independent O(N^2) direct summation over the
 same input, which shares no code with the tree traversal. On a 10k-body input:
 
+Run on one PE, `theta` and `b` as shown, everything else default:
+
 | Configuration | `E_P` | gap to direct |
 | --- | --- | --- |
 | `theta=0.5`, leaf 10 | -0.1213429476 | 5.4e-5 |
@@ -219,7 +243,8 @@ the multipole approximation rather than a bug. A constant offset that does
 *not* close with `theta` is the signature of a real error; that is how the
 self-interaction term described above was found.
 
-Runs on 1 PE and 4 PEs produce bit-identical energies.
+Runs on different PE counts produce bit-identical energies as long as the
+decomposition does not refine deeply; see the known issue under Status.
 
 Note that `E_P` reported here excludes each particle's interaction with itself.
 The traversal always opens a bucket against itself, so every particle picks up
@@ -235,10 +260,20 @@ every step, configurable leaf size, energy tracking.
 Not yet implemented: ParaView output, load-balancing controls, TreePiece
 auto-sizing. See the repository-level notes.
 
-Known issue, pre-existing and unrelated to the above: results are invariant to
-PE count at the default `-ppc=1000`, but not when the decomposition refines
-further. At `-p=200 -ppc=100` on the same 10k input, particle-particle
-interaction counts come out 2413667 / 2250733 / 2163201 on 1 / 2 / 4 PEs, so
-the tree itself differs with the PE count. The differences are the size of the
-multipole approximation error rather than roundoff. This matters for strong
-scaling, where the runs being compared should be doing the same work.
+Known issues in the decomposition, both pre-existing:
+
+*Results depend on the PE count* once the decomposition refines deeply. On the
+same 10k input at `-ppc=100`, particle-particle interaction counts come out
+2413667 / 2250733 / 2163201 on 1 / 2 / 4 PEs -- the tree itself differs. The
+differences are the size of the multipole approximation error rather than
+roundoff. This matters for strong scaling, where the runs being compared should
+be doing the same work. Lowering the default `ppc` to 100 makes this show up in
+the default configuration, where before it was hidden behind a `ppc` so large
+that refinement stopped almost immediately.
+
+*`Need more tree pieces!`* still aborts some runs. The default TreePiece count,
+`2*numParticles/ppc`, allows 2.4x the leaves a perfectly balanced split would
+need, but the splitters cut the Morton key space at midpoints rather than at
+medians, so the real requirement is higher and varies with the input. It is
+usually short by only one or two: `N=700, ppc=100` asks for 15 and is given 14.
+Raising `-p` fixes any individual case.

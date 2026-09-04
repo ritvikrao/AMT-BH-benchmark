@@ -13,8 +13,27 @@ CHARMC   = $(CHARM_PATH)/bin/charmc
 APP_FLAGS = -DSTATISTICS
 OPTS      = -O3 -g $(APP_FLAGS)
 
+# Charm++ tracing, off by default. The trace libraries instrument every entry
+# method, so a traced binary is not the one the benchmark should be timed on --
+# build it separately when you want to look inside a run.
+#
+#   make TRACE=projections   full event log per PE (.log + .sts), for the
+#                            Projections GUI. Detailed and large; keep runs
+#                            short (a couple of hundred steps) or the writes
+#                            themselves distort what you are measuring.
+#   make TRACE=summary       per-PE utilization over time (.sum). Far smaller,
+#                            and enough to see load imbalance and idle time.
+#   make                     no tracing.
+#
+# Use the -timers= phase report for routine measurements; reach for these when
+# the phase numbers say something is wrong and you need to see where.
+TRACE ?= none
+ifneq ($(TRACE),none)
+  TRACEMODE = -tracemode $(TRACE)
+endif
+
 CXXFLAGS += $(OPTS) -I$(INCPATH)
-LDFLAGS  += $(OPTS) -L. -language charm++ -module RotateLB -memory os #-tracemode projections
+LDFLAGS  += $(OPTS) -L. -language charm++ -module RotateLB -memory os $(TRACEMODE)
 
 CXX = $(CHARMC)
 CC  = $(CXX)
@@ -30,8 +49,16 @@ SRC = Main.cpp DataManager.cpp TreePiece.cpp \
 TARGET = barnes
 all: $(TARGET) gen plummer
 
-$(TARGET): $(OBJECTS)
+$(TARGET): $(OBJECTS) .tracemode
 	$(CHARMC) -o $(TARGET) $(LDFLAGS) $(OBJECTS)
+
+# -tracemode is a link-time choice only, so switching TRACE= would not
+# otherwise rebuild anything. Record the current setting and relink when it
+# changes.
+.tracemode: FORCE
+	@[ -f $@ ] && [ "`cat $@`" = "$(TRACE)" ] || { echo "$(TRACE)" > $@; }
+
+FORCE:
 
 # Standalone input generators. These are plain C++; they do not link Charm++,
 # but they do include the shared headers, so they need the Charm++ include path
@@ -55,7 +82,7 @@ plummer: plummer.o gen_util.o
 
 clean:
 	rm -f core* $(OBJECTS) *~ $(TARGET) *.decl.h *.def.h charmrun conv-host \
-	      gen plummer plummer.o gen_util.o
+	      gen plummer plummer.o gen_util.o .tracemode
 
 # The one dependency a clean build cannot discover for itself: every
 # translation unit includes barnes.decl.h, which charmc generates from
@@ -72,6 +99,6 @@ depends:
 	mv Makefile.dep.tmp Makefile.dep
 	rm -f $(OBJECTS)
 
-.PHONY: all clean depends
+.PHONY: all clean depends FORCE
 
 -include Makefile.dep
