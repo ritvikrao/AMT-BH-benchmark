@@ -162,14 +162,29 @@ void Main::setParameters(CkArgMsg *m){
     // decomposition just comes out coarser, with a warning.
     globalParams.numTreePieces =
         2*(globalParams.numParticles/globalParams.ppc) + 16;
-    // Fewer TreePieces than PEs guarantees idle PEs whatever the decomposition
-    // does.
-    if(globalParams.numTreePieces < CkNumPes())
-      globalParams.numTreePieces = CkNumPes();
   }
   else{
     globalParams.numTreePieces = atoi(it->second.c_str());
   }
+
+  // More TreePieces than bodies cannot all be filled, and the leftovers are
+  // not harmlessly spread around: Charm++'s default map gives each PE a
+  // contiguous block of array indices, so an unfillable top of the array is an
+  // idle top of the machine. Asking for 4096 TreePieces for 2000 bodies on 4
+  // PEs left the last PE with nothing at all.
+  if(globalParams.numTreePieces > globalParams.numParticles){
+    CkPrintf("[Main] %d TreePieces asked for but only %d bodies to fill them; "
+             "using %d\n",
+             globalParams.numTreePieces, globalParams.numParticles,
+             globalParams.numParticles);
+    globalParams.numTreePieces = globalParams.numParticles;
+  }
+
+  // Fewer TreePieces than PEs guarantees idle PEs whatever the decomposition
+  // does. This has to come last: it is the one case where an unfillable
+  // TreePiece is still better than a PE with no TreePiece to be given.
+  if(globalParams.numTreePieces < CkNumPes())
+    globalParams.numTreePieces = CkNumPes();
 
   CkPrintf("tree pieces: %d\n", globalParams.numTreePieces);
 
@@ -345,10 +360,16 @@ void Main::reportBalance(CkReductionMsg *msg){
   }
   const double mean = (double)total/npes;
 
+  const int ntp = counts[npes];
+  const double tpMean = ntp > 0 ? (double)total/ntp : 0.0;
+
   CkPrintf("[BALANCE] step 0: %d particles over %d PEs in %d of %d TreePieces; "
-           "min %d max %d mean %.0f, max/mean %.3f",
-           total, npes, counts[npes], globalParams.numTreePieces,
-           lo, hi, mean, mean > 0.0 ? hi/mean : 0.0);
+           "per PE min %d max %d mean %.0f, max/mean %.3f; "
+           "per TreePiece min %d max %d mean %.1f, max/mean %.3f",
+           total, npes, ntp, globalParams.numTreePieces,
+           lo, hi, mean, mean > 0.0 ? hi/mean : 0.0,
+           counts[npes+1], counts[npes+2], tpMean,
+           tpMean > 0.0 ? counts[npes+2]/tpMean : 0.0);
   if(empty > 0) CkPrintf(", %d PE%s empty", empty, empty == 1 ? "" : "s");
   CkPrintf("\n");
 

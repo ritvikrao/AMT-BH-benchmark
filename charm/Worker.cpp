@@ -6,14 +6,6 @@
 
 extern CProxy_TreePiece treePieceProxy;
 
-int ParticleFlushWorker::work(Node<NodeDescriptor> *node){
-  if(node->getNumChildren() > 0) return 1;
-
-  dataManager->sendParticlesToTreePiece(node,leafCnt); 
-  leafCnt++;
-  return 0;
-}
-
 int MomentsWorker::work(Node<ForceData> *node){
   
   int numChildren = node->getNumChildren();

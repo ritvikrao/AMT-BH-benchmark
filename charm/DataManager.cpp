@@ -39,8 +39,10 @@ void copyMomentsToNode(Node<ForceData> *node, const MomentsExchangeStruct &mes){
 }
 
 DataManager::DataManager() : 
-  activeBins(true),
   numTreePieces(1),
+  numLeaves(1),
+  tpMinParticles(0),
+  tpMaxParticles(0),
   firstSplitterRound(false),
   decompIterations(0),
   iteration(0),
@@ -388,7 +390,7 @@ void DataManager::decompose(const BoundingBox &universe){
     prevIterationStart = CkWallTimer();
   }
 
-  numTreePieces = 1;
+  numLeaves = 1;
   initHistogramParticles();
   sendHistogram();
 }
@@ -433,30 +435,50 @@ void DataManager::receiveHistogram(CkReductionMsg *msg){
   CkVec<pair<Node<NodeDescriptor>*,bool> > *active = activeBins.getActive();
   CkAssert(numRecvdBins == active->length());
 
-  // How many leaves the refinement needs is a property of the input: the
-  // splitters cut the Morton key space at midpoints rather than at medians, so
-  // a clustered region keeps splitting long after an even one has stopped.
-  // -p is therefore a budget, not a prediction. Running out of it used to
-  // abort the run outright; instead, stop subdividing and let the remaining
-  // oversized bins through. The result is a coarser, less even decomposition
-  // -- which is worth a warning -- but it is a correct one, and it costs no
-  // accuracy: bucket refinement in buildTree() is driven by particle count,
-  // not by TreePiece boundaries.
+  // Refine until every bin is small compared with one TreePiece's share, then
+  // group the bins; the grouping is what makes the counts even, not the
+  // refinement. Two different numbers are in play:
+  //
+  //   N/P    what one TreePiece should end up holding
+  //   grain  the bin size the histogram is driven down to, N/(P*OVERSAMPLE)
+  //
+  // Splitting a bin cuts the Morton key range down the middle, not the
+  // particles, so bins never come out equal however far the refinement goes --
+  // that is why one-leaf-per-TreePiece could not be balanced. But a cut
+  // between two bins can fall anywhere the bin boundaries allow, so with bins
+  // of at most `grain` particles the greedy assignment below lands every
+  // TreePiece within one bin of its share. The bin size, not the tree shape,
+  // is the error bound.
+  //
+  // A bin whose particles all share one key cannot be split -- every particle
+  // lands in the same child at every depth, forever -- so those stop here
+  // whatever their count. That check is what bounds the recursion now that the
+  // TreePiece budget no longer does.
+  const int grain =
+      globalParams.numParticles/(globalParams.numTreePieces*DECOMP_OVERSAMPLE);
+  // Duplicate positions aside, the count criterion alone terminates. The cap
+  // is for the pathological input it does not: a few thousand bodies at the
+  // same point in a cloud of others keeps splitting until the key runs out.
+  const int maxLeaves = 2*DECOMP_OVERSAMPLE*globalParams.numTreePieces;
   int overBudget = 0;
 
   for(int i = 0; i < numRecvdBins; i++){
     bool wantsRefine =
-        descriptors[i].numParticles > (Real)(DECOMP_TOLERANCE*globalParams.ppc);
-    bool canRefine =
-        numTreePieces + (BRANCH_FACTOR-1) <= globalParams.numTreePieces;
+        descriptors[i].numParticles > (grain > 1 ? grain : 1) &&
+        descriptors[i].smallestKey != descriptors[i].largestKey;
+    bool canRefine = numLeaves + (BRANCH_FACTOR-1) <= maxLeaves;
 
     if(wantsRefine && canRefine){
       // need to refine this bin (partition)
       binsToRefine.push_back(i);
-      numTreePieces += (BRANCH_FACTOR-1);
+      numLeaves += (BRANCH_FACTOR-1);
     }
     else{
       if(wantsRefine) overBudget++;
+      // This bin is settled. Record what the histogram says about it on the
+      // node itself: the node keeps it until the leaves are assigned, which is
+      // the only place the global counts and key ranges are still needed, and
+      // the bin can then drop out of the active set.
       Node<NodeDescriptor> *nd = (*active)[i].first;
       nd->data = descriptors[i];
     }
@@ -465,57 +487,12 @@ void DataManager::receiveHistogram(CkReductionMsg *msg){
   }
 
   if(overBudget > 0 && !warnedTreePieceBudget){
-    CkPrintf("[0] warning: ran out of TreePieces at %d (-p); %d bin%s left above "
-             "the %g-particle target, so the decomposition is coarser than asked "
-             "for. Raise -p to remove this.\n",
-             globalParams.numTreePieces, overBudget, overBudget == 1 ? "" : "s",
-             (double)(DECOMP_TOLERANCE*globalParams.ppc));
+    CkPrintf("[0] warning: decomposition hit its %d-bin ceiling with %d bin%s "
+             "still above the %d-particle grain, so the initial particle "
+             "counts will be less even than asked for.\n",
+             maxLeaves, overBudget, overBudget == 1 ? "" : "s",
+             grain > 1 ? grain : 1);
     warnedTreePieceBudget = true;
-  }
-
-  // The loop above stops as soon as every bin is under the target, which
-  // normally leaves a good part of the -p budget unspent: 1277 TreePieces of
-  // 2016 on 100k Plummer bodies. That is not just waste. The leaves are handed
-  // to TreePieces 0..numTreePieces-1, and Charm++'s default map gives each PE
-  // a contiguous *block* of array indices, so an unspent top third of the
-  // array is an idle top third of the machine: at 4 PEs one of them got no
-  // particles at all, at 8 PEs two did.
-  //
-  // So spend the rest of the budget. Once no bin wants refining on its own
-  // account, split the heaviest bins that can still be split until the leaf
-  // count reaches -p exactly. The decomposition comes out finer and more even
-  // rather than coarser, and there are no leftover TreePieces for the map to
-  // fill a PE with.
-  //
-  // Cost is one more histogram round in the usual case: the leaf count at most
-  // doubles per round, and the budget is under 2x what the target refinement
-  // already produced.
-  //
-  // A bin whose particles all share one key cannot be split -- every particle
-  // lands in the same child, at every depth -- so those are not candidates. If
-  // too few candidates remain, the budget stays partly unspent; the balance
-  // report prints how many TreePieces were used of how many.
-  if(binsToRefine.length() == 0 && numTreePieces < globalParams.numTreePieces){
-    vector<pair<int,int> > candidates;   // (-numParticles, bin), heaviest first
-    for(int i = 0; i < numRecvdBins; i++){
-      if(descriptors[i].smallestKey != descriptors[i].largestKey){
-        candidates.push_back(make_pair(-descriptors[i].numParticles,i));
-      }
-    }
-
-    int room = globalParams.numTreePieces - numTreePieces;
-    int take = (int)candidates.size() < room ? (int)candidates.size() : room;
-
-    partial_sort(candidates.begin(),candidates.begin()+take,candidates.end());
-
-    // Back into bin order, so the active bins stay in tree order as they do on
-    // every other round.
-    vector<int> extra;
-    for(int i = 0; i < take; i++) extra.push_back(candidates[i].second);
-    sort(extra.begin(),extra.end());
-
-    for(int i = 0; i < take; i++) binsToRefine.push_back(extra[i]);
-    numTreePieces += take*(BRANCH_FACTOR-1);
   }
 
   int numBinsToRefine = binsToRefine.length();
@@ -529,38 +506,197 @@ void DataManager::receiveHistogram(CkReductionMsg *msg){
   }
   else{
     // create tree pieces and send proxy
+    // Every leaf now carries its global descriptor, so PE 0 can lay the whole
+    // Morton curve out end to end and decide where to cut it.
+    CkVec<Node<NodeDescriptor>*> leaves;
+    LeafCollectWorker lcw(leaves);
+    scaffoldTrav.preorderTraversal(sortingRoot,&lcw);
+    CkAssert(leaves.length() == numLeaves);
+
+    assignLeavesToTreePieces(leaves);
+    haveRanges = true;
+
     #ifdef STATISTICS
-    CkPrintf("[0] decomp done after %d iterations used treepieces %d\n", decompIterations, numTreePieces);
+    CkPrintf("[0] decomp done after %d iterations, %d bins over %d treepieces\n",
+             decompIterations, numLeaves, numTreePieces);
     #endif
     decompIterations = 0;
-    
-    keyRanges = new Key[numTreePieces*2];
+
     // so that by the time tree pieces start submitting
     // particles (which can only happen after the flushParticles()
     // below, we have the right count of local tree pieces
     senseTreePieces();
     flushParticles();
-    // PE 0 sets ranges in sendParticlesToTreePiece
-    haveRanges = true;
 
     int numKeys = numTreePieces*2;
+    int numStarts = numTreePieces+1;
 
-    RangeMsg *rmsg = new (numKeys) RangeMsg;
+    RangeMsg *rmsg = new (numKeys,numStarts) RangeMsg;
     rmsg->numTreePieces = numTreePieces;
     memcpy(rmsg->keys,keyRanges,sizeof(Key)*numKeys);
+    memcpy(rmsg->leafStart,tpLeafStart.getVec(),sizeof(int)*numStarts);
     thisProxy.sendParticles(rmsg);
   }
 
   delete msg;
 }
 
+// Cut the Morton curve into numTreePieces runs of leaves carrying as nearly
+// equal particle counts as the leaf boundaries allow. This is where the
+// benchmark's "distribute the particles as evenly as possible" is actually
+// honoured: the refinement above only made the leaves small, and small leaves
+// are useless on their own -- one leaf per TreePiece leaves each TreePiece
+// holding whatever its slice of space happened to contain, which on a
+// clustered input is nothing like an equal share.
+//
+// Runs, not an arbitrary assignment. Everything downstream reads a TreePiece
+// index as a position along the curve: the per-PE tree merge walks the
+// TreePieces on a PE in index order, ownership of a node is the index range
+// [ownerStart,ownerEnd] found by binary search over keyRanges, and
+// Node::getOwnershipFromChildren asserts sibling ranges are adjacent. Handing
+// TreePiece i a contiguous run keeps all of that true.
+//
+// Only PE 0 runs this -- it is the only one with the global histogram -- and
+// the boundaries go out to the others in the RangeMsg.
+void DataManager::assignLeavesToTreePieces(CkVec<Node<NodeDescriptor>*> &leaves){
+  const int numLeafBins = leaves.length();
+
+  // -p is a ceiling here only in the sense that there must be a leaf for each
+  // TreePiece to start at. Refining to N/(P*DECOMP_OVERSAMPLE) normally leaves
+  // several times as many bins as TreePieces; fewer means an input with fewer
+  // distinct positions than that, and the leftover TreePieces stay empty.
+  numTreePieces = globalParams.numTreePieces < numLeafBins ?
+                  globalParams.numTreePieces : numLeafBins;
+
+  // One bin for the whole universe means every body hashed to the same Morton
+  // key: they all sit inside a single cell of the 2^BITS_PER_DIM grid, which
+  // is to say at the same position to the only resolution the keys have. There
+  // is no decomposition to make, nothing the tree can separate, and every
+  // separation in the force kernel is zero. Left alone the run does not fail,
+  // it stalls -- the one TreePiece that has particles never gets a bucket, and
+  // quiescence is detected with no forces computed.
+  if(numLeafBins == 1 && leaves[0]->data.numParticles > 1 &&
+     leaves[0]->data.smallestKey == leaves[0]->data.largestKey){
+    ostringstream oss;
+    oss << "all " << leaves[0]->data.numParticles << " bodies share one "
+        << "position to the resolution of the " << BITS_PER_DIM
+        << "-bit-per-dimension Morton key; there is nothing to decompose"
+        << endl;
+    CkAbort("%s", oss.str().c_str());
+  }
+
+  CmiInt8 total = 0;
+  for(int i = 0; i < numLeafBins; i++) total += leaves[i]->data.numParticles;
+
+  tpLeafStart.length() = 0;
+  tpLeafStart.reserve(numTreePieces+1);
+  tpLeafStart.push_back(0);
+
+  int leaf = 0;
+  CmiInt8 acc = 0;      // particles in leaves [0,leaf)
+
+  for(int tp = 0; tp < numTreePieces; tp++){
+    // Cumulative target rather than a per-TreePiece one, so the rounding error
+    // of each cut is absorbed by the next rather than accumulating along the
+    // curve.
+    CmiInt8 target = (total*(tp+1))/numTreePieces;
+    const CmiInt8 before = acc;
+    // Every remaining TreePiece still needs a leaf of its own.
+    const int limit = numLeafBins-(numTreePieces-1-tp);
+    const int start = leaf;
+
+    do {
+      acc += leaves[leaf]->data.numParticles;
+      leaf++;
+    } while(leaf < limit && acc < target);
+
+    // The loop stops at the first leaf that carries the cumulative count past
+    // the target; stopping one earlier may leave it closer. Taking whichever
+    // side is nearer halves the worst-case error, from a whole bin to half of
+    // one.
+    if(leaf > start+1){
+      CmiInt8 back = acc-leaves[leaf-1]->data.numParticles;
+      if(target-back < acc-target){
+        leaf--;
+        acc = back;
+      }
+    }
+
+    tpLeafStart.push_back(leaf);
+
+    const int mine = (int)(acc-before);
+    if(tp == 0 || mine < tpMinParticles) tpMinParticles = mine;
+    if(tp == 0 || mine > tpMaxParticles) tpMaxParticles = mine;
+  }
+
+  // Trailing empty leaves can leave the walk short of the end -- the target is
+  // met before they are reached, since they carry nothing. They still have to
+  // belong to somebody: every leaf is visited by the flush on every PE, and a
+  // leaf outside all the runs would have its particles silently dropped on any
+  // PE that turned out to have some.
+  tpLeafStart[numTreePieces] = numLeafBins;
+
+  // Each TreePiece's key range is the union of its leaves'. The runs are
+  // contiguous and the leaves are in curve order, so the ranges stay ordered
+  // and disjoint, which is what the binary search over keyRanges needs.
+  // Freed at the end of the previous step, along with the tree it described.
+  keyRanges = new Key[numTreePieces*2];
+  for(int tp = 0; tp < numTreePieces; tp++){
+    Key lo = leaves[tpLeafStart[tp]]->data.smallestKey;
+    Key hi = leaves[tpLeafStart[tp]]->data.largestKey;
+    for(int l = tpLeafStart[tp]+1; l < tpLeafStart[tp+1]; l++){
+      const NodeDescriptor &d = leaves[l]->data;
+      if(d.smallestKey < lo) lo = d.smallestKey;
+      if(d.largestKey > hi) hi = d.largestKey;
+    }
+    CkAssert(lo <= hi);
+    keyRanges[(tp<<1)] = lo;
+    keyRanges[(tp<<1)+1] = hi;
+  }
+}
+
 void DataManager::flushParticles(){
-  ParticleFlushWorker pfw(this);
-  scaffoldTrav.preorderTraversal(sortingRoot,&pfw);
+  CkVec<Node<NodeDescriptor>*> leaves;
+  LeafCollectWorker lcw(leaves);
+  scaffoldTrav.preorderTraversal(sortingRoot,&lcw);
+  // The tree is refined by broadcast, so it has the same shape everywhere; if
+  // it did not, PE 0's leaf numbering would mean something different here.
+  CkAssert(leaves.length() == tpLeafStart[numTreePieces]);
 
-  int numUsefulTreePieces = pfw.getNumLeaves(); 
+  for(int tp = 0; tp < numTreePieces; tp++){
+    // This PE's particles are sorted by key and each leaf owns a contiguous
+    // run of them, so a run of consecutive leaves is one contiguous range --
+    // no copying leaf by leaf, and one message per TreePiece rather than one
+    // per leaf, which matters because a TreePiece counts the messages it gets
+    // against CkNumPes() to know when its particles are all in.
+    Particle *start = NULL;
+    Particle *end = NULL;
+    int numParticles = 0;
 
-  for(int i = numUsefulTreePieces; i < globalParams.numTreePieces; i++){
+    for(int l = tpLeafStart[tp]; l < tpLeafStart[tp+1]; l++){
+      int np = leaves[l]->getNumParticles();
+      if(np == 0) continue;
+      Particle *p = leaves[l]->getParticles();
+      if(start == NULL) start = p;
+      else CkAssert(p == end);
+      end = p+np;
+      numParticles += np;
+    }
+
+    if(numParticles > 0){
+      ParticleMsg *msg = new (numParticles,0) ParticleMsg;
+      memcpy(msg->part,start,sizeof(Particle)*numParticles);
+      msg->numParticles = numParticles;
+      treePieceProxy[tp].receiveParticles(msg);
+    }
+    else{
+      treePieceProxy[tp].receiveParticles();
+    }
+  }
+
+  // TreePieces past the end of the decomposition still have to hear from every
+  // PE, or they will sit waiting for the count that releases them.
+  for(int i = numTreePieces; i < globalParams.numTreePieces; i++){
     treePieceProxy[i].receiveParticles();
   }
 
@@ -591,39 +727,14 @@ void DataManager::receiveSplitters(SplitterMsg *msg){
   delete msg;
 }
 
-void DataManager::sendParticlesToTreePiece(Node<NodeDescriptor> *nd, int tp) {
-  CkAssert(nd->getNumChildren() == 0);
-  int np = nd->getNumParticles();
-
-  if(np > 0){
-    ParticleMsg *msg = new (np,0) ParticleMsg;
-    memcpy(msg->part, nd->getParticles(), sizeof(Particle)*np);
-    msg->numParticles = np;
-    treePieceProxy[tp].receiveParticles(msg);
-  }
-  else{
-    treePieceProxy[tp].receiveParticles();
-  }
-
-  // only PE 0 has the correct ranges
-  if(CkMyPe() == 0){
-    if(nd->data.numParticles > 0){
-      CkAssert(nd->data.smallestKey <= nd->data.largestKey);
-    } else {
-      CkAssert(nd->data.smallestKey == nd->data.largestKey);
-    }
-
-    keyRanges[(tp<<1)] = nd->data.smallestKey;
-    keyRanges[(tp<<1)+1] = nd->data.largestKey;
-
-  }
-}
-
 void DataManager::sendParticles(RangeMsg *msg){
 
   if(CkMyPe() != 0){
     numTreePieces = msg->numTreePieces;
     keyRanges = msg->keys;
+    tpLeafStart.length() = 0;
+    tpLeafStart.reserve(numTreePieces+1);
+    for(int i = 0; i <= numTreePieces; i++) tpLeafStart.push_back(msg->leafStart[i]);
     haveRanges = true;
     // delete this later
     rangeMsg = msg;
@@ -722,11 +833,18 @@ void DataManager::processSubmittedParticles(){
 // number of TreePieces the refinement used, which only PE 0 knows -- every
 // other PE contributes 0 there, so the sum leaves PE 0's value standing.
 void DataManager::reportBalance(){
-  int n = CkNumPes()+1;
+  int n = CkNumPes()+3;
   int *counts = new int[n];
   memset(counts,0,sizeof(int)*n);
   counts[CkMyPe()] = myNumParticles;
-  if(CkMyPe() == 0) counts[CkNumPes()] = numTreePieces;
+  // The last three slots describe the TreePieces rather than the PEs, and only
+  // PE 0 knows them -- it is the one that cut the curve. Everyone else leaves
+  // zeros there, so the sum passes PE 0's values through untouched.
+  if(CkMyPe() == 0){
+    counts[CkNumPes()] = numTreePieces;
+    counts[CkNumPes()+1] = tpMinParticles;
+    counts[CkNumPes()+2] = tpMaxParticles;
+  }
 
   CkCallback cb(CkIndex_Main::reportBalance(NULL),mainProxy);
   contribute(sizeof(int)*n,counts,CkReduction::sum_int,cb);
@@ -763,8 +881,26 @@ void DataManager::buildTree(){
     // when a node its split, 
     for(int i = 0; i < active->length(); i++){
       Node<ForceData> *node = (*active)[i].first;
-      if((node->getOwnerEnd() > node->getOwnerStart()) || 
-         (node->getNumParticles() > limit)){
+
+      // Particles sharing a key cannot be told apart by refining -- they land
+      // in the same child at every depth -- so an oversized node made of them
+      // is as small as it will ever get. Without this the bucket criterion
+      // never lets go and the refinement runs off the bottom of the key: any
+      // input with more than ppb bodies at one position (a quantised dataset,
+      // a generator with a singular core) aborted here on the depth assert.
+      // The node stays a bucket above its target size, which costs
+      // particle-particle work but is correct.
+      //
+      // The ownership criterion is safe as it stands: refining narrows the
+      // node's key range whatever the particles do, and no two TreePieces
+      // share a key, so a node's owners always resolve to one.
+      Particle *particles = node->getParticles();
+      int numParticles = node->getNumParticles();
+      bool separable =
+          numParticles > 0 && particles[0].key != particles[numParticles-1].key;
+
+      if((node->getOwnerEnd() > node->getOwnerStart()) ||
+         (numParticles > limit && separable)){
         refines.push_back(i);
       }
     }
@@ -1244,6 +1380,7 @@ void DataManager::advance(CkReductionMsg *msg){
 
   if(CkMyPe() == 0) delete[] keyRanges;
   else delete rangeMsg;
+  keyRanges = NULL;
 
   timers.stop(PHASE_INTEGRATION);
   timers.finishStep();

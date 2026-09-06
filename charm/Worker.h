@@ -22,20 +22,25 @@ class CutoffWorker {
 };
 
 class DataManager;
-class ParticleFlushWorker : public CutoffWorker<NodeDescriptor> {
-  int leafCnt;
-  DataManager *dataManager;
+
+// Collect the leaves of the decomposition's sorting tree, left to right --
+// which, the tree being built on Morton keys, is the order the space-filling
+// curve visits them in.
+//
+// The tree has the same shape on every PE (every PE refines the same bins, and
+// Node::refine always makes a full set of children), so leaf i means the same
+// region of the curve everywhere. That is what lets PE 0 decide the leaf-to-
+// TreePiece assignment alone and broadcast it as leaf indices.
+class LeafCollectWorker : public CutoffWorker<NodeDescriptor> {
+  CkVec<Node<NodeDescriptor>*> &leaves;
 
   public:
-  ParticleFlushWorker(DataManager *dm) : 
-    dataManager(dm),
-    leafCnt(0)
-  {
-  }
+  LeafCollectWorker(CkVec<Node<NodeDescriptor>*> &l) : leaves(l) {}
 
-  int work(Node<NodeDescriptor> *node);
-  int getNumLeaves(){
-    return leafCnt;
+  int work(Node<NodeDescriptor> *node){
+    if(node->getNumChildren() > 0) return 1;
+    leaves.push_back(node);
+    return 0;
   }
 };
 

@@ -16,7 +16,11 @@ struct ParticleMsg : public CMessage_ParticleMsg {
 };
 
 struct RangeMsg : public CMessage_RangeMsg {
+  // Two keys per TreePiece -- the lowest and highest Morton key it owns --
+  // and, in leafStart, the leaf index each TreePiece's run of the curve begins
+  // at, with a final entry equal to the leaf count.
   Key *keys;
+  int *leafStart;
   int numTreePieces;
 };
 

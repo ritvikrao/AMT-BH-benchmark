@@ -20,6 +20,7 @@ mainmodule barnes {
 
   message RangeMsg {
     Key keys[];
+    int leafStart[];
   };
 
   message RequestMsg;
