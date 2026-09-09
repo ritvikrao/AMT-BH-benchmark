@@ -90,25 +90,17 @@ class DataManager : public CBase_DataManager {
   bool firstSplitterRound;
 
   Node<NodeDescriptor> *sortingRoot;
-  // TreePieces the decomposition actually used. Equal to -p unless there were
-  // fewer histogram bins than that to hand out.
   int numTreePieces;
-  // Bins the decomposition histogram has open. PE 0 counts these while it
-  // refines; the other PEs never need the number.
-  int numLeaves;
-  // Leaf index at which each TreePiece's run of the Morton curve begins, with
-  // a final entry equal to the leaf count -- so TreePiece i owns the leaves
-  // [tpLeafStart[i], tpLeafStart[i+1]). Decided on PE 0 and broadcast, since
-  // only PE 0 sees the global histogram.
-  CkVec<int> tpLeafStart;
-  // Smallest and largest particle count over the TreePieces, known exactly on
-  // PE 0 the moment the runs are cut. Reported once, in the balance line.
+  // Smallest and largest particle count over the TreePieces. Each histogram
+  // leaf becomes one TreePiece, so these are the extremes of the final
+  // histogram, known exactly on PE 0 and nowhere else. Reported once, in the
+  // balance line.
   int tpMinParticles;
   int tpMaxParticles;
 
   int iteration;
   int decompIterations;
-  // Warn once, not once per decomposition round, when the bin cap is hit.
+  // Warn once, not once per decomposition round, when -p runs out.
   bool warnedTreePieceBudget;
   ActiveBinInfo<NodeDescriptor> activeBins;
 
@@ -206,9 +198,9 @@ class DataManager : public CBase_DataManager {
 
   void decompose(const BoundingBox &universe);
   void receiveHistogram(CkReductionMsg *msg);
-  void assignLeavesToTreePieces(CkVec<Node<NodeDescriptor>*> &leaves);
   void receiveSplitters(SplitterMsg *msg);
   void sendParticles(RangeMsg *msg);
+  void sendParticlesToTreePiece(Node<NodeDescriptor> *nd, int tp);
 
   void receiveMoments(MomentsMsg *msg);
   

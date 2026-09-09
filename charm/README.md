@@ -12,9 +12,8 @@ Gravitational N-Body Simulation with Barnes-Hut* (v1.0).
 Decomposition is **Morton/SFC-based with a pointer-based octree** — a hybrid of
 the two options the whitepaper's Section 4.2 leaves open. Particles are hashed
 to 63-bit Morton keys (21 bits per dimension) and sorted; a distributed
-histogram-and-splitter refinement then cuts the key space into bins several
-times finer than one `TreePiece`'s share, and consecutive bins are grouped into
-`TreePiece`s of as nearly equal particle count as those bin boundaries allow. The octree itself is pointer-based and built
+histogram-and-splitter refinement then cuts the key space into `TreePiece`s of
+roughly equal particle count. The octree itself is pointer-based and built
 top-down from those key ranges, with remote nodes and particles fetched on
 demand through a per-PE software cache in `DataManager`.
 
@@ -92,25 +91,26 @@ Options take the form `-<name>=<value>`:
 | `output` | path prefix for ParaView snapshots; open `<prefix>.pvd` | none (no output) |
 | `outputfreq` | write a snapshot every Nth step | 1 |
 
-`p` is met exactly, not approached. The refinement drives the histogram down
-to bins of `numParticles / (p * DECOMP_OVERSAMPLE)` particles -- a quarter of
-that at the default oversample of 4 -- and the bins are then walked in Morton
-order and cut into `p` runs at the particle-count quantiles. Cutting between
-bins rather than splitting the key range in half is what makes the counts even:
-a bin is the unit of error, so no TreePiece ends up more than one bin away from
-its share.
+`p` is a ceiling, and the decomposition spends all of it. The splitters cut the
+Morton key space at midpoints rather than at medians, so how many leaves the
+`ppc` target alone produces depends on how clustered the input is -- on 100k
+Plummer bodies it is 1277 against a budget of 2016. The refinement then keeps
+splitting its heaviest leaves until the count reaches `p` exactly. That is not
+just tidiness: TreePieces are handed out in index order and Charm++'s default
+map gives each PE a contiguous *block* of indices, so leftover TreePieces are
+not spread thinly over the machine, they are an idle tail of it. See
+[Balance](#balance).
+
+Running out of budget the other way -- the `ppc` target needing more leaves
+than `p` allows -- stops the subdivision and prints a warning. The
+decomposition comes out coarser and less even, but the run continues and the
+answers are unaffected, since bucket refinement is driven by particle count
+rather than by TreePiece boundaries.
 
 The one thing `p` cannot exceed is the number of bodies, and a value larger
-than that is reduced with a message. This is not pedantry: TreePieces are
-handed out in index order and Charm++'s default map gives each PE a contiguous
-*block* of indices, so TreePieces that cannot be filled are not spread thinly
-over the machine, they are an idle tail of it. Asking for 4096 TreePieces for
-2000 bodies on 4 PEs used to leave the fourth PE with nothing at all.
-
-The refinement also has a ceiling of `2 * DECOMP_OVERSAMPLE * p` bins, which a
-well-behaved input never reaches -- it is there for inputs that stack many
-bodies on one position, where splitting a bin cannot separate them. Hitting it
-prints a warning and gives a less even decomposition, not a wrong one.
+than that is reduced with a message. For the same block-map reason: asking for
+4096 TreePieces for 2000 bodies on 4 PEs left the fourth PE with nothing at
+all.
 
 ## Balance
 
@@ -118,38 +118,44 @@ Every run prints how the decomposition came out, once, after the first step's
 particle exchange:
 
 ```
-[BALANCE] step 0: 100000 particles over 4 PEs in 2016 of 2016 TreePieces; per PE min 24997 max 25004 mean 25000, max/mean 1.000; per TreePiece min 38 max 60 mean 49.6, max/mean 1.210
+[BALANCE] step 0: 100000 particles over 4 PEs in 2016 of 2016 TreePieces; per PE min 24768 max 25186 mean 25000, max/mean 1.007; per TreePiece min 3 max 108 mean 49.6, max/mean 2.177
 ```
 
 Two numbers, because they answer different questions. The per-PE figure is the
 imbalance the step time actually pays for. The per-TreePiece figure is how
-evenly the bodies themselves were distributed, which is what the specification
-asks about and what a load balancer would have to work with; it is always the
-worse of the two, since a PE holds many TreePieces and their errors cancel.
+evenly the bodies themselves came out, which is what the specification's
+"as evenly as possible" asks about; it is always much the worse of the two,
+because a PE holds many TreePieces and their errors cancel. Both cost one
+reduction at the start of the run and nothing thereafter.
 
-`DECOMP_OVERSAMPLE` in `defines.h` sets how far apart the two can drift. It is
-how many bins the histogram makes per TreePiece, so it bounds the per-TreePiece
-error directly, and it is not free -- finer bins put the TreePiece boundaries
-deeper down the Morton curve, and the local tree build then has to refine
-further along every boundary before a node has a single owner. On 100k Plummer
-bodies with 2016 TreePieces:
+The gap between them is the point, not a defect. A leaf here is an equal slice
+of *space* -- splitting a bin halves its key range, not its contents -- so on a
+clustered input the leaves hold very unequal numbers of bodies, and the
+per-TreePiece figure stays around 2 however far the refinement goes. The per-PE
+figure does not, because over-decomposition averages it away: 2016 TreePieces
+over 4 PEs is 504 apiece, and 2.177 per TreePiece becomes 1.007 per PE.
 
-| oversample | 1 | 2 | 4 | 8 |
-|---|---|---|---|---|
-| per TreePiece max/mean | 1.835 | 1.411 | 1.210 | 1.109 |
-| per PE max/mean (4 PEs) | 1.001 | 1.000 | 1.000 | 1.000 |
-| s/step, 4 PEs | 0.0625 | 0.0655 | 0.0704 | 0.0758 |
-| s/step, 8 PEs | 0.0614 | 0.0678 | 0.0733 | 0.0809 |
+That is a deliberate choice, and it was measured rather than assumed. A
+decomposition that cuts at particle-count quantiles instead was implemented and
+then withdrawn; on the same 100k input it moved the per-TreePiece figure from
+2.177 to 1.210 and the per-PE figure from 1.007 to 1.000, and cost 5-9% of the
+step, because finer bins put the TreePiece boundaries deeper down the Morton
+curve and the local tree build then has to refine further along every boundary
+before a node has a single owner. Paying that for a number the runtime already
+absorbs is the wrong trade under this programming model. See
+[Status](#status).
 
-Oversample 1 is one bin per TreePiece, which is what a decomposition that cuts
-at key midpoints amounts to. The default is 4.
+Where the averaging runs out is small inputs, and there the fix is more
+TreePieces rather than finer ones: 100k bodies give per-PE 1.004 / 1.007 /
+1.019 at 2 / 4 / 8 PEs, but 2000 bodies over 8 PEs give 1.44, because there are
+only 56 TreePieces to go round.
 
-What remains is the imbalance no choice of splitters can remove. Bodies that
-share a Morton key -- they are within one cell of a 2^21-per-dimension grid --
-cannot be separated at any depth, so an input that stacks 2400 of 3000 bodies
-on one point gives one TreePiece with all 2400 in it, and the balance line says
-so. An input where *every* body shares a key is rejected outright rather than
-run.
+What no choice of splitters can remove is bodies that share a Morton key --
+they sit within one cell of a 2^21-per-dimension grid, and no depth of
+refinement separates them. An input that stacks 2400 of 3000 bodies on one
+point gives one TreePiece holding all 2400, whichever way the cuts are made,
+and the balance line says so. An input where *every* body shares a key is
+rejected outright rather than run.
 
 ## Input formats
 
@@ -394,63 +400,84 @@ infinite, so it is easy to miss.
 
 ## Status
 
-Working: distributed tree build and traversal, SFC decomposition rebalanced by
-particle count every step, configurable leaf size, energy tracking.
+Working: distributed tree build and traversal, SFC decomposition rebalanced
+every step, configurable leaf size, energy tracking.
 
 Not yet implemented: load-balancing controls.
 
-*The decomposition left whole PEs empty.* Fixed, in two steps. First the `ppc`
-target was stopping the refinement well short of the `-p` budget -- 1277
-TreePieces of 2016 on the 100k input -- and since Charm++'s default map gives
-each PE a contiguous block of array indices, the unspent top of the array was
-an idle top of the machine. At 4 PEs the particles landed 39753 / 39063 / 21184
-/ **0**; at 8 PEs the last two PEs got nothing. Spending the whole budget took
-the 100k step time from 0.0893 s to 0.0614 s at 4 PEs and from 0.1517 s to
-0.1001 s at 2, almost all of it out of idle time: the slowest PE's unclaimed
-time fell from 86.5 ms per step to 2.7 ms.
+*The decomposition left whole PEs empty.* Fixed. The `ppc` target stopped the
+refinement well short of the `-p` budget -- 1277 TreePieces of 2016 on the 100k
+input -- and since Charm++'s default map gives each PE a contiguous block of
+array indices, the unspent top of the array was an idle top of the machine. At
+4 PEs the particles landed 39753 / 39063 / 21184 / **0**; at 8 PEs the last two
+PEs got nothing at all. Colouring a ParaView snapshot by `pe` showed it
+immediately -- three colours for four PEs.
 
-*The particle counts were still uneven.* That first fix gave every TreePiece a
-leaf, but a leaf is a slice of *space*, and equal slices of space do not hold
-equal numbers of bodies. On 100k bodies the worst TreePiece held 91 against a
-mean of 49.6; on 2000 bodies over 8 PEs the worst PE held 1.44 times the mean,
-and raising `-p` to 1024 only brought that to 1.21.
+The refinement now spends the whole budget, splitting its heaviest leaves until
+the leaf count reaches `-p` exactly, so there is no idle tail to hand a PE. To
+choose those leaves it has to be able to compare all of them, so a histogram
+round now carries every leaf rather than only the ones split last round; that
+costs one 32-byte descriptor per leaf per round and does not show up in the
+decomposition phase time. On the 100k input, seconds per step over 10 steps:
 
-The decomposition now cuts by particle count. The histogram is refined to bins
-several times finer than one TreePiece's share, and consecutive bins are
-grouped into TreePieces at the particle-count quantiles rather than one leaf
-being handed to each. Because a cut falls between bins, the bin size bounds the
-error, and `DECOMP_OVERSAMPLE` sets it. Worst TreePiece over the mean, on 100k
-bodies, 2016 TreePieces: 1.835 before, 1.210 now. Worst PE over the mean, on
-2000 bodies: 1.029 / 1.122 / 1.440 before at 2 / 4 / 8 PEs, 1.000 / 1.006 /
-1.024 now.
+| PEs | before | after |
+|-----|--------|-------|
+| 1 | 0.1885 | 0.1882 |
+| 2 | 0.1517 | 0.1001 |
+| 4 | 0.0893 | 0.0614 |
+| 8 | 0.0785 | 0.0612 |
 
-It is not free. Finer bins put the TreePiece boundaries deeper down the Morton
-curve, so the local tree build has to refine further along each boundary before
-a node resolves to one owner; tree build roughly doubles, and the histogram
-costs a few more rounds. Traversal, which is 77% of the step, is unaffected.
-Seconds per step on the 100k input:
+The phase table says where it went: at 4 PEs the slowest PE's unclaimed time --
+`other`, which is what idling shows up as -- fell from 86.5 ms per step to 2.7
+ms, and traversal from 86.5 ms to 57.7 ms. Energies are unchanged to all
+printed digits, at every PE count. Note that 4 and 8 PEs now come out the same,
+which is a different problem and still open.
 
-| PEs | leaf per TreePiece | count-balanced |
-|-----|-----|-----|
-| 1 | 0.1871 | 0.1881 |
-| 2 | 0.1006 | 0.1019 |
-| 4 | 0.0629 | 0.0663 |
-| 8 | 0.0614 | 0.0669 |
+*Equal particle counts per chare were tried and withdrawn.* The specification
+asks for the initial distribution to put as nearly equal counts on each chare
+as it can, and cutting the key space at midpoints cannot do that however far
+the refinement goes. A decomposition that refines the histogram several times
+finer than one TreePiece's share and then groups consecutive bins at the
+particle-count quantiles was implemented, measured, and reverted. On 100k
+Plummer bodies with 2016 TreePieces:
 
-Energies are unchanged to all printed digits at every PE count, and agree with
-an independent O(N^2) direct summation to 8e-6 relative. Note that 4 and 8 PEs
-still come out about the same, which is a different problem and still open.
+| bins per TreePiece | 1 (oct-tree) | 2 | 4 | 8 |
+|---|---|---|---|---|
+| per TreePiece max/mean | 2.177 | 1.411 | 1.210 | 1.109 |
+| per PE max/mean, 4 PEs | 1.007 | 1.000 | 1.000 | 1.000 |
+| s/step, 4 PEs | 0.0625 | 0.0655 | 0.0704 | 0.0758 |
+| s/step, 8 PEs | 0.0614 | 0.0678 | 0.0733 | 0.0809 |
 
-*Bodies at the same position aborted the tree build.* Refining a node cannot
-separate particles that share a Morton key -- they land in the same child at
-every depth -- but the bucket criterion kept asking, and the refinement ran off
-the bottom of the 63-bit key onto an assertion. Any input with more than `b`
-bodies at one position hit it: quantised data, or a generator with a singular
-core. Such a node is now left as a bucket above its target size, which costs
-particle-particle work and is correct; on 3000 bodies with 2400 of them stacked
-on one point the energy agrees with direct summation to 8e-6. An input where
-*every* body shares a key is reported and rejected, since there is nothing to
-decompose and nothing the tree can separate.
+The per-chare column improves by a factor of two and the per-PE column, which
+is what the step time pays for, does not move at all: 504 TreePieces to a PE
+average the difference away before it reaches anything that schedules work.
+The cost is real -- 5-9% of the step at 4 and 8 PEs -- and it is not in the
+histogram but in the tree build, which roughly doubles, because finer bins put
+the TreePiece boundaries deeper down the Morton curve and every boundary then
+has to be refined further before a node resolves to a single owner. Traversal,
+77% of the step, is untouched either way.
+
+So the oct-tree decomposition stands: under this programming model the chare is
+not the unit of scheduling, and over-decomposition is the mechanism that is
+supposed to absorb exactly this. The claim holds where there are enough chares
+per PE for the averaging to work, which is a statement about `-p`; on 2000
+bodies at 8 PEs, where there are only 56 TreePieces, per-PE imbalance is 1.44
+and raising `-p` is the remedy. The count-balanced version is recoverable from
+the history if the group decides the specification means the per-chare figure
+literally.
+
+*Bodies at the same position aborted the run.* Refining cannot separate
+particles that share a Morton key -- they land in the same child at every depth
+-- but both the decomposition and the tree build kept asking, and the
+refinement ran off the bottom of the 63-bit key onto an assertion. Any input
+with a clump of coincident bodies hit it: quantised data, or a generator with a
+singular core. Both refinement criteria now stop at a bin or node whose
+particles share one key. The node stays a bucket above its target size, which
+costs particle-particle work and is correct; on 3000 bodies with 2400 of them
+stacked on one point the energy agrees with an O(N^2) direct summation to 8e-6
+relative, and across 1, 2 and 4 PEs to 7 digits. An input where *every* body
+shares a key used to hang at quiescence instead, and is now reported and
+rejected.
 
 Two pre-existing correctness bugs in the distributed traversal were fixed; both
 were invisible on one PE, which is why they had survived. On the 10k input at

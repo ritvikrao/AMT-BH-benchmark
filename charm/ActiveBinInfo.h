@@ -13,7 +13,12 @@ struct ActiveBinInfo{
   CkVec<NodeDescriptor> counts;
   CkVec<Node<T>*> unrefined;
 
-  ActiveBinInfo(){
+  // Carry leaves that were not refined this round into the next round's active
+  // set. The decomposition wants this (see processRefine); the local tree
+  // build does not -- there the active set emptying out is what ends the loop.
+  bool keepUnrefined;
+
+  ActiveBinInfo(bool keep = false) : keepUnrefined(keep) {
     oldvec = new CkVec<std::pair<Node<T> *, bool> >();
     newvec = new CkVec<std::pair<Node<T> *, bool> >();
   }
@@ -47,17 +52,28 @@ struct ActiveBinInfo{
     counts.push_back(NodeDescriptor(np,node->getKey(),kfirst,klast));
   }
 
-  // Refine the bins named and drop the rest: a bin that nobody asked to split
-  // is settled for good, its descriptor is already recorded on the node, and
-  // the next round only needs to weigh the bins that were just created. That
-  // keeps the histogram traffic proportional to the number of nodes the
-  // decomposition creates in total rather than to that number times the number
-  // of rounds.
+  // Refine the bins named, and -- when keepUnrefined is set -- carry every
+  // other leaf into the next round, so that the active set is the whole leaf
+  // frontier rather than just the leaves created last round.
+  //
+  // The decomposition histogram used to drop the unrefined ones, which is
+  // cheaper: its late rounds then cover only the handful of bins still being
+  // split. But a decision that has to weigh all the leaves against each other,
+  // which is what spending the leftover TreePiece budget in
+  // DataManager::receiveHistogram does, can only see a fraction of them that
+  // way. The extra traffic is one 32-byte descriptor per leaf per round.
   void processRefine(int *binsToRefine, int numBinsToRefine){
     for(int i = 0; i < numBinsToRefine; i++){
-      int bin = binsToRefine[i];
-      Node<T> *node = (*oldvec)[bin].first;
-      (*oldvec)[bin].second = true;
+      (*oldvec)[binsToRefine[i]].second = true;
+    }
+
+    for(int i = 0; i < oldvec->length(); i++){
+      Node<T> *node = (*oldvec)[i].first;
+
+      if(!(*oldvec)[i].second){
+        if(keepUnrefined) addNewNode(node);
+        continue;
+      }
 
       refine(node);
       for(int j = 0; j < node->getNumChildren(); j++){
