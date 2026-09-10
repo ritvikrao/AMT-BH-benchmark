@@ -78,10 +78,10 @@ Options take the form `-<name>=<value>`:
 | `in` | input particle file (required) | — |
 | `format` | `csv` or `binary` | inferred from the extension |
 | `p` | TreePiece budget | `2 * numParticles / ppc + 16`, at least one per PE |
-| `ppc` | target particles per TreePiece | 100 |
+| `ppc` | target particles per TreePiece | 100 (too fine at scale -- see [Running at scale](#granularity)) |
 | `b` | **max particles per leaf (bucket)** | 10 |
 | `theta` | opening angle | 0.5 |
-| `G` | gravitational constant, in the dataset's units | 1.0 |
+| `G` | gravitational constant, in the dataset's units | 1.0 (**not** what the data generator writes -- see [Units](#units)) |
 | `eps` | Plummer softening length | 0.05 |
 | `dtime` | timestep | 0.025 |
 | `killat` | number of steps to run | 10 |
@@ -111,6 +111,154 @@ The one thing `p` cannot exceed is the number of bodies, and a value larger
 than that is reduced with a message. For the same block-map reason: asking for
 4096 TreePieces for 2000 bodies on 4 PEs left the fourth PE with nothing at
 all.
+
+## Running at scale
+
+The defaults above suit a laptop-sized run. On a cluster three things have to
+be set explicitly and only one of them is a program option: the process
+layout, the fabric environment, and the physical units. What follows is what a
+full-node run on NCSA Delta needs; the reasoning carries to other
+Slingshot/libfabric machines.
+
+### Process layout
+
+Under Reconverse `+p` and `+ppn` are **per process**, and the process count
+comes from the launcher, so `srun -n 4 ./barnes +ppn 15` is four processes of
+15 PEs, 60 PEs in total. (`+pe` gives the total instead; only one of the three
+may be passed.)
+
+A Delta CPU node is 128 cores in 8 NUMA domains of 16. Put one process in each
+domain and leave one core per domain to the OS:
+
+```shell
+export FI_CXI_RX_MATCH_MODE=hybrid
+
+srun -n 8 --cpu-bind=none --unbuffered --kill-on-bad-exit=1 ./barnes \
+    +ppn 15 +pemap 0-14,16-30,32-46,48-62,64-78,80-94,96-110,112-126 \
+    +lci_ndevices 2 \
+    -in=data.csv -ppc=2000 -killat=10 \
+    -G=4.498626405128888e-15 -dtime=5000 -eps=0.1
+```
+
+`--cpu-bind=none` matters: let `+pemap` do the pinning or Slurm's own binding
+fights it. `+showcpuaffinity` prints the resulting map if you want to check.
+
+One process per NUMA domain is worth the trouble. On 2M bodies over a full
+node it beats a single process holding all 120 PEs by 1.9x (0.447 against
+0.846 s/step), and at 8M bodies by 1.7x (1.528 against 2.651). Below about 30
+cores the two layouts are indistinguishable, so a single process is fine
+there.
+
+### Fabric environment
+
+**`FI_CXI_RX_MATCH_MODE=hybrid` is required** at roughly six processes or more
+on Slingshot. Without it the CXI provider runs out of hardware List Entries and
+the job dies in flow control:
+
+```
+cxip_ux_onload_cb(): PtlTE 34: [Fatal] LE resources not recovered during
+flow control. FI_CXI_RX_MATCH_MODE=[hybrid|software] is required
+```
+
+Hybrid mode spills to software matching instead of dying. The same exhaustion
+also shows up as `No space left on device` from the receive path.
+
+`+lci_ndevices` is worth setting, and should be a **small** number -- 2 to 4,
+nowhere near the PE count. Each device registers its own packet pool
+(`LCI_ATTR_NPACKETS` x `LCI_ATTR_PACKET_SIZE`, 512 MB by default), and past
+roughly 60 devices on a node the NIC runs out of memory-registration resources
+and aborts in `register_memory_impl`. Measured on 2M bodies, seconds per step:
+
+| processes | 1 device | 2 devices | 4 devices |
+|---|---|---|---|
+| 2 | 1.485 | 1.378 | **1.308** |
+| 4 | 1.540 | 1.267 | **1.113** |
+| 6 | 1.612 | 1.256 | **1.194** |
+| 8 | 1.510 | **1.229** | 1.396 |
+
+With an LCI older than `06748025` ("Use allgather for OFI bootstrap") one more
+export is needed:
+
+```shell
+export PMI_MAX_KVS_ENTRIES=1000
+```
+
+That bootstrap published `nranks` keys per rank per device while Cray PMI2
+allots a job 21 key-value entries, so five processes already overran it: rank 0
+aborted and everyone else blocked in the bootstrap barrier, which presents as a
+hang. Current LCI publishes one key per rank per device and needs no export.
+
+### Units
+
+`-G`, `-dtime` and `-eps` default to N-body units: `G = 1`, unit total mass,
+softening 0.05. The
+[project data generator](https://github.com/vancraar/DataGenerator) writes
+astrophysical ones -- solar masses, parsecs, years -- and running those against
+the defaults does not fail, it silently integrates a system whose dynamical
+time is far shorter than one step and returns nonsense. For a 1e5 solar-mass
+system spanning about 100 pc:
+
+```
+-G=4.498626405128888e-15 -dtime=5000 -eps=0.1
+```
+
+`dtime` is in years here and resolves an inner dynamical time of about
+1.3e6 yr; `eps` is in parsecs, below the mean particle spacing. Watch the
+`[ENERGY]` line: `E_T` should hold steady. If it moves by orders of magnitude
+over the first few steps the units are wrong, not the solver.
+
+### Granularity
+
+`-ppc` defaults to 100, which is far too fine at scale -- it asks for `2N/ppc`
+TreePieces, 40016 of them at 2M bodies. Measured on two processes of 15 PEs:
+
+| bodies | ppc=100 | 500 | 1000 | 2000 | 8000 |
+|---|---|---|---|---|---|
+| 200k | 0.565 | 0.261 | 0.252 | **0.237** | 0.287 |
+| 2M | 2.557 | 1.419 | 1.306 | **1.262** | 1.315 |
+
+`-ppc=2000` was best at both sizes. Do keep enough TreePieces per PE for
+over-decomposition to absorb imbalance -- see [Balance](#balance).
+
+### What to expect
+
+2M bodies, one Delta CPU node, 10 steps, medians of three runs, with the
+settings above:
+
+| cores | layout | s/step | speedup | traversal | tree build |
+|---|---|---|---|---|---|
+| 1 | 1 x 1 | 17.217 | 1.0 | 16.251 | 0.216 |
+| 15 | 1 x 15 | 1.473 | 11.7 | 1.287 | 0.047 |
+| 30 | 2 x 15 | 0.835 | 20.6 | 0.718 | 0.050 |
+| 60 | 4 x 15 | 0.526 | 32.7 | 0.408 | 0.065 |
+| 90 | 6 x 15 | 0.432 | 39.8 | 0.288 | 0.084 |
+| 105 | 7 x 15 | **0.427** | **40.3** | 0.271 | 0.096 |
+| 120 | 8 x 15 | 0.447 | 38.5 | 0.239 | 0.148 |
+
+Traversal is what scales -- 68x from 1 to 120 cores, and nearly flat under weak
+scaling at 50k bodies per core. Tree build is what eventually bends the curve,
+which is why 120 cores comes out marginally slower than 105.
+
+### When a run fails
+
+Launch with `--unbuffered`, always. libfabric's fatal messages are emitted by
+the failing rank and are lost to output buffering otherwise, so a job dying on
+the LE exhaustion above looks instead like a silent hang.
+`--kill-on-bad-exit=1` tears the step down when one rank aborts rather than
+leaving the survivors blocked in a collective.
+
+Between runs in a batch script, make sure the previous step is really gone. A
+killed `srun` leaves the Charm++ threads spinning and still holding every core,
+so the next run either measures a saturated node or queues behind the corpse
+and looks like a hang of its own. The reap has to happen where the tasks are --
+on the compute node, not the submitting host:
+
+```shell
+for s in $(squeue -h -s -j $SLURM_JOB_ID -o %i | grep -v extern); do
+    scancel --signal=KILL "$s"
+done
+pkill -9 -f barnes
+```
 
 ## Balance
 
@@ -405,6 +553,17 @@ every step, configurable leaf size, energy tracking.
 
 Not yet implemented: load-balancing controls.
 
+Open: potential energy shows intermittent one-step excursions, up to 4e-3
+relative, reproducible for a given configuration and varying with PE count.
+`E_K` agrees across configurations to about 1e-9, so trajectories are
+consistent and it is `E_P` alone that moves; the pattern -- a spike at one step
+that recovers at the next -- looks like potential contributions landing after
+`kickDriftKick` zeroes `p->potential`. The particle-count decomposition
+described below does not show it (0 of 9 steps, against 5 of 9 here), so it is
+specific to the oct-tree path. Since `p->potential` and `p->acceleration` come
+out of the same traversal, this wants a direct force comparison rather than
+being inferred from the `E_K` agreement.
+
 *The decomposition left whole PEs empty.* Fixed. The `ppc` target stopped the
 refinement well short of the `-p` budget -- 1277 TreePieces of 2016 on the 100k
 input -- and since Charm++'s default map gives each PE a contiguous block of
@@ -499,3 +658,30 @@ pointer as "the particles are already in hand" -- so it skipped the fetch and
 silently dropped every one of them. The other path that turns a node remote,
 `Node::deserialize`, had always cleared the pointer; `copyMomentsToNode` now
 does too.
+
+*Sibling owner ranges tripped an assertion whenever a child was unowned.*
+Fixed. `OwnershipActiveBinInfo::refine` marks a child that no TreePiece owns by
+writing a sentinel owner range, -69 or -171, rather than a real one.
+`Node::getOwnershipFromChildren` then subtracted those sentinels as though they
+were TreePiece indices, so one unowned child produced a difference of about 69
+and failed
+
+```
+CkAssert(diff >= 0 && diff <= 1)        // Node.h
+```
+
+The sentinel also propagated into the node's own range, which took `ownerStart`
+straight from `children[0]` whether that child was owned or not.
+
+This is why the abort came and went with no apparent pattern across body count,
+`-ppc` and PE count: those only decide whether some child ends up unowned. At
+2M bodies and `-ppc=1000` it fired at 2 and 4 processes but not at 1 or 3; at
+200k it fired for `-ppc` 100, 500 and 1000 but not 2000 or 8000.
+
+The walk now visits only the owned children, tracking the last owned child's
+end rather than the immediately preceding sibling's, and takes the node's range
+from the first and last owned children. A genuine discontinuity now reports the
+range it found instead of asserting. Verified over the grid that used to abort:
+200k and 2M bodies at `-ppc` 100/500/1000/2000/8000, and 2M at `-ppc=1000` over
+1, 2, 3, 4, 6 and 8 processes, plus 1 to 120 cores in both the
+one-process-per-NUMA-domain and single-process layouts.
