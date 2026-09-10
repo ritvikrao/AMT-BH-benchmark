@@ -154,6 +154,14 @@ class Node {
     // set node type from children types
     int numChildren = core.numChildren;
     bool allChildrenExternal = true;
+    // A child that no tree piece owns carries a sentinel owner range rather
+    // than a real one (OwnershipActiveBinInfo::refine writes -69/-171 when a
+    // child's range comes out empty). Such a child neither separates its
+    // siblings' ranges nor contributes to this node's own, so walk only the
+    // owned children: prevEnd trails the last owned child seen.
+    int prevEnd = -1;
+    int firstStart = -1;
+    int lastEnd = -1;
     for(int i = 0; i < numChildren; i++){
       NodeType c_type = children[i].getType();
       if(c_type != Remote 
@@ -161,10 +169,19 @@ class Node {
           && c_type != RemoteEmptyBucket){
         allChildrenExternal = false;
       }
-      if(i == 0) continue;
-      int diff = children[i].getOwnerStart()
-        - children[i-1].getOwnerEnd(); 
-      CkAssert(diff >= 0 && diff <= 1);
+      if(children[i].getOwnerStart() < 0) continue;
+      if(prevEnd >= 0){
+        int diff = children[i].getOwnerStart() - prevEnd;
+        if(diff < 0 || diff > 1){
+          CkAbort("node %llx depth %d: child %d owns [%d,%d], previous owned "
+                  "child ends at %d, leaving a gap of %d\n",
+                  (unsigned long long)core.key, core.depth, i,
+                  children[i].getOwnerStart(), children[i].getOwnerEnd(),
+                  prevEnd, diff);
+        }
+      }
+      if(firstStart < 0) firstStart = children[i].getOwnerStart();
+      prevEnd = lastEnd = children[i].getOwnerEnd();
     }
 
     // since we invoke this method only when updating
@@ -174,8 +191,10 @@ class Node {
     if(allChildrenExternal) setType(Remote);
     else setType(Boundary);
 
-    core.ownerStart = children[0].getOwnerStart();
-    core.ownerEnd = children[numChildren-1].getOwnerEnd();
+    // firstStart/lastEnd stay -1 only when no child is owned at all, in which
+    // case this node is unowned too and keeps a sentinel range of its own.
+    core.ownerStart = firstStart;
+    core.ownerEnd = lastEnd;
 
   }
 
