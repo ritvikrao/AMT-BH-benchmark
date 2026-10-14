@@ -35,7 +35,10 @@ the N-BodyShop `utility/structures` library. The result is three binaries:
 `barnes` (the simulation), and `plummer` / `gen` (input generators).
 
 The Reconverse targets are not on Charm++'s `main` branch yet, so `build.sh`
-clones the branch that carries them, `reconverse-specific-build`. Charm++ has
+clones the branch that carries them, `charm4py-reconverse-fixes`, pinned to the
+commit the measurements were taken on (`CHARM_COMMIT`), with Reconverse as a git
+submodule at the commit Charm++ records. It also overrides Reconverse's LCI pin
+(`LCI_TAG`, see [Fabric environment](#fabric-environment)). Charm++ has
 `reconverse-darwin-arm8`, `reconverse-linux-arm8` and
 `reconverse-linux-x86_64`; `CHARM_TARGET` picks one explicitly if the guess
 from `uname` is wrong.
@@ -47,9 +50,10 @@ directory and no Charm++ is built:
 CHARM_PATH=/path/to/charm/reconverse-<os>-<arch> ./build.sh
 ```
 
-`build.sh` also takes `CHARM_SRC`, `CHARM_REPO`, `CHARM_BRANCH`, `CHARM_OPTS`,
-`JOBS` and `TRACE`; see the header of the script. The Charm++ tree is built
-once and reused, so a second `./build.sh` rebuilds only the benchmark.
+`build.sh` also takes `CHARM_SRC`, `CHARM_REPO`, `CHARM_BRANCH`,
+`CHARM_COMMIT`, `LCI_TAG`, `CHARM_OPTS`, `JOBS` and `TRACE`; see the header of
+the script. The Charm++ tree is built once per commit and LCI tag and reused, so
+a second `./build.sh` rebuilds only the benchmark.
 
 Underneath is a plain Makefile, which is the thing to reach for while editing:
 
@@ -248,6 +252,12 @@ That bootstrap published `nranks` keys per rank per device while Cray PMI2
 allots a job 21 key-value entries, so five processes already overran it: rank 0
 aborted and everyone else blocked in the bootstrap barrier, which presents as a
 hang. Current LCI publishes one key per rank per device and needs no export.
+
+Reconverse's own LCI pin, `ca88ce2c`, predates that fix, and with the old
+bootstrap the key count is P²·D: 64 processes with 2 devices each is 8192, so
+not even `PMI_MAX_KVS_ENTRIES=1000` saves an 8-node run. `build.sh` therefore
+builds LCI `dfb924cf`, which is that pin plus the two bootstrap fixes. Keep
+the export anyway; it costs nothing.
 
 ### Units
 
@@ -576,14 +586,41 @@ Forces are bit-identical across PE counts. On the 10k input, 1 / 2 / 4 / 8 PEs
 give the same `E_P` to every printed digit at every `theta` tried, and the same
 node-interaction and particle-interaction counts.
 
-Over several steps the PE counts drift apart, by 1.1e-5 relative at
-`theta=0.5`, 5.6e-7 at `theta=0.1` and 1.1e-7 at `theta=0.05`. That is the
-approximation moving, not an inconsistency: interactions accumulate in a
-different order on a different PE count, so a particle's position can differ in
-its last bit, and a last-bit difference occasionally moves it across a tree
-boundary and changes which multipoles get used. The effect therefore scales
-with the multipole error and vanishes with it. Within a fixed PE count the code
-is deterministic -- repeated runs agree bit for bit.
+Layouts agree to roundoff at every step, not just the first, which is what
+makes a multi-node run checkable against a one-PE run. Per particle, at 2M
+bodies, 1 process x 8 PEs against 1 x 4 at steps 1 and 3: median relative
+force difference 4e-16, maximum 7e-14, `E_P` identical to every printed
+digit. Within a fixed layout the code is deterministic -- repeated runs agree
+bit for bit.
+
+That held only for step 0 until 2026-10. Each PE padded its own bounding
+box before the boxes were unioned, so from step 1 on the universe -- and with it
+every Morton key and the whole tree -- depended on which PE held the outermost
+particles. Forces then differed between layouts by the size of the tree
+approximation itself, about 1e-3, which had been read as harmless roundoff
+growth. The padding is now applied once, to the reduced box.
+
+To check this on any run:
+
+```shell
+./barnes ... -dumpstep=9 -dumpprefix=a      # writes a_step9_pe*.bin
+./barnes ... -dumpstep=9 -dumpprefix=b      # same input, another layout
+scripts/compare_forces.py a_step9 b_step9   # matched by particle id
+```
+
+`tools/direct_sum.cpp` computes exact forces for the positions in a dump, so
+`compare_forces.py direct.bin a_step9` measures the tree approximation itself.
+At 100k bodies, `theta=0.5`, leaf 10, step 3: median |da|/|a| 5.5e-3, 99th
+percentile 3.9e-2, `E_P` off by 2.8e-4.
+
+### Integration
+
+`kickDriftKick` is a leapfrog (kick-drift-kick, with each step's closing kick
+fused into the next step's opening one): one force evaluation per step,
+second order. `E_K` is measured between the two fused kicks, at the same
+instant as `E_P`. Until 2026-10 the code kicked twice with the same forces
+around the drift, which is first order; position errors at the timestep in use
+fell by 86x with the fix (MULTINODE.md, Step 1b).
 
 ### The mass invariant
 
@@ -639,16 +676,16 @@ every step, configurable leaf size, energy tracking.
 
 Not yet implemented: load-balancing controls.
 
-Open: potential energy shows intermittent one-step excursions, up to 4e-3
-relative, reproducible for a given configuration and varying with PE count.
-`E_K` agrees across configurations to about 1e-9, so trajectories are
-consistent and it is `E_P` alone that moves; the pattern -- a spike at one step
-that recovers at the next -- looks like potential contributions landing after
-`kickDriftKick` zeroes `p->potential`. The particle-count decomposition
-described below does not show it (0 of 9 steps, against 5 of 9 here), so it is
-specific to the oct-tree path. Since `p->potential` and `p->acceleration` come
-out of the same traversal, this wants a direct force comparison rather than
-being inferred from the `E_K` agreement.
+*Potential energy jumped for one step at a time.* Fixed. Up to 4e-3 relative,
+reproducible for a configuration, varying with PE count. TreePiece key ranges
+were only ever min/max-updated, never reset, so local TreePieces were sorted by
+stale keys while the moments pass assumed index order. When the two disagreed,
+a TreePiece's own leaves were marked Remote and asked a TreePiece on the same PE
+for moments, getting zero mass back: about 450 particles at 2M bodies got no
+force at all for the step, and everyone else lost their mass. Keys are now
+reset every step and descriptors sorted by index; three cheap checks abort if
+it ever recurs (descriptor order, a Remote leaf holding local particles, a
+particle no bucket visited).
 
 *The decomposition left whole PEs empty.* Fixed. The `ppc` target stopped the
 refinement well short of the `-p` budget -- 1277 TreePieces of 2016 on the 100k

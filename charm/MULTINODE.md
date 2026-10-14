@@ -34,13 +34,17 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
       implementations". **Needs a project-level decision:** the opening
       criteria differ, so an equal `theta` is not an equal accuracy across
       runtimes.
-- [ ] **0.3** `build.sh`: LCI override, pinned Charm++ ref, tracing with `TRACE=`.
+- [x] **0.3** `build.sh`: pinned Charm++ `bc6d7a283` + submodule, LCI `dfb924cf`, tracing on.
+      Tested from an empty clone on Delta.
 - [x] **0.4** Harness in `scripts/` with machine files. Verified by the smoke
       job below: its 1-node run reproduces the 2026-09-10 energy series bit for
       bit, at 0.399 s/step against 0.447 then (different node, newer Reconverse).
-- [ ] **1** E_P bug: confirm, fix, force-dump + direct-sum tooling.
-- [ ] **1b** Integrator: `kickDriftKick` is first order, not leapfrog (see Step 1b).
-- [ ] **2** First multi-node runs; correctness matrix on 1, 2 and 4 nodes.
+- [x] **1** E_P bug: confirmed (stale TreePiece keys), fixed (77a8a5a). Found and
+      fixed a second layout dependence on the way (per-PE box padding, 23217cc).
+      Tooling: `-dumpstep`, `tools/direct_sum.cpp`, `scripts/compare_forces.py`.
+- [x] **1b** Integrator is now leapfrog (a84e8cd): 86x smaller position error at dt=5000.
+- [x] **2** Correctness matrix on 1, 2 and 4 nodes passes
+      ([results](results/correctness-2026-10-14.txt)). Still to do: `run.sh NODES`.
 - [ ] **3a** Particle exchange: DM-to-DM with exact counts (no P x T messages).
 - [ ] **3b** Moments skeleton: only refine where the PE has particles.
 - [ ] **3c** Cheap fixes: TreeChecker per fetch, InteractionChecker, traversalMass[1024].
@@ -52,6 +56,7 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
 | date | machine | what | commit | job |
 |---|---|---|---|---|
 | 2026-09-10 | Delta, 1 node | 1-120 cores, both layouts, 138 runs ([report](results/REPORT-1node-2026-09-10.txt)) | 2cdf1d5 | 21945686 |
+| 2026-10-14 | Delta, 1/2/4 nodes | **correctness matrix**: 1x8, 1x8x15, 2x2x15, 2x8x15, 4x8x15 (480 PEs). Energy series identical to all printed digits; forces at step 9 agree per particle to 7e-14; 0 spikes; E_T drift 3.2e-6 over 10 steps | 89d55a5 | 22904192 |
 | 2026-10-14 | Delta, 2 nodes (cn044, cn130) | **first 2-node run**: 2M, 2x8x15 = 240 PEs, graceful, 0.383 s/step (1 node: 0.399). E_P deviates 6.6e-3 from 1 node, 6 spikes in 10 steps: the Step 1 bug, not yet fixed | 8d1b285 binary | 22903631 |
 
 ## Resuming on a new machine
@@ -87,38 +92,35 @@ Measured 2026-10-14 (`scontrol`, `sacctmgr`, `sshare`, `sbatch --test-only`):
 - `run_one` skips runs whose log already shows a graceful exit, so a
   resubmitted job picks up where it stopped.
 
-## Step 1: the E_P excursion bug
+## Step 1: the E_P excursion bug (done)
 
-**Symptom:** one-step spikes in E_P of up to 4e-3 relative. They are
-reproducible for a given configuration and vary with the PE count, and are
-absent in the particle-count decomposition (15ad03f).
-`scripts/compare_energy.py` on the 2026-09-10 logs reports 5 spikes in 10
-steps on every layout, and an E_P deviation of 4.0e-3 at 105 cores relative to
-1x8.
+**Cause:** `TreePiece::smallestKey`/`largestKey` were only ever
+min/max-updated, never reset. Local descriptors were sorted by those stale
+keys, while `MomentsWorker::setLeafType` assumes index order. When the two
+orders disagreed:
+- a TreePiece's own leaves were marked `Remote`;
+- they asked a TreePiece on the same PE for moments and got zero mass back;
+- about 450 particles at 2M bodies then got no force for the step, and every
+  other particle missed their mass.
 
-**Leading hypothesis** (from reading the code, not yet confirmed by a run):
-- `TreePiece::smallestKey`/`largestKey` (`TreePiece.cpp:15-16,35-36`) are only
-  ever min/max-updated, and `finishIteration` never resets them.
-- `DataManager::processSubmittedParticles` sorts local TreePiece descriptors
-  by those stale keys (`DataManager.cpp:709`, `Descriptor.h:142-147`), but
-  `MomentsWorker::setLeafType` (`Worker.cpp:46-78`) assumes index order.
-- Once the order breaks, a local TreePiece's leaves are marked `Remote` and
-  request moments from a TreePiece on the same PE, which returns zero mass.
-- That TreePiece's particles then get no force or potential for one step,
-  and every other particle misses their mass.
+The EP_DIAG commit (c45c4a4) shows it firing exactly at the spike steps
+(3, 5 and 7 of 10).
 
-This matches every symptom. The particle-count decomposition never leaves a
-TreePiece empty, which is what lets the stale order arise. The mass-spread check
-cannot see it, because every bucket loses the same mass.
+**Second bug found with the force dump:** each PE padded its own bounding box
+before the union. From step 1 on, the universe, and with it the whole tree,
+therefore depended on the layout, and forces differed between layouts by the
+size of the tree approximation (median 9.4e-4, max 46%). Padding is now
+applied once, to the reduced box.
 
-**Plan:**
-1. Add asserts that should fire exactly at the spike steps.
-2. Fix: reset the keys each step, and sort by index.
-3. Add a permanent force-dump option (`-dumpstep`), an O(N²) direct-sum
-   reference, and `compare_forces.py`.
-4. Rerun `compare_energy.py`: the fix is confirmed if spike counts go to 0.
+**Permanent checks** abort on a misordered descriptor, a `Remote` leaf
+holding local particles, or a particle that no bucket visited.
 
-## Step 1b: the integrator is first order
+**Tree accuracy against the direct sum** (100k bodies, theta 0.5, leaf 10):
+|da|/|a| median 5.5e-3, p99 3.9e-2. That is high-ish for a monopole at theta
+0.5, and consistent with a bucket-COM opening criterion; see the README
+comparison. This is a project decision, not a bug.
+
+## Step 1b: the integrator was first order (done, a84e8cd)
 
 `DataManager::kickDriftKick` applies, once the forces a_n are in: kick dt/2,
 drift dt, then kick dt/2 again **with the same a_n**. Step 0 instead opens

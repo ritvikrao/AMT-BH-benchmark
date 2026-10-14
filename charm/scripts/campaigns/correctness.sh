@@ -1,20 +1,29 @@
 # Correctness matrix (MULTINODE.md Step 2), sourced by job.sh.
 #
-#   scripts/submit.sh 2 50 correctness [N] [STEPS]
+#   scripts/submit.sh 4 30 correctness [N] [STEPS]
 #
 # The same input on layouts that differ in PE count, process count and node
-# count. Every run must exit gracefully, and the per-step [ENERGY] series must
-# agree across layouts (scripts/compare_energy.py). Forces are compared with
-# the -dumpstep output once that exists (Step 1).
+# count. Every run dumps per-particle forces at its last step. Check with
+#
+#   scripts/compare_energy.py $LOGS/corr_n<N>_N1_c8_*.log $LOGS/corr_n<N>_N*.log
+#   scripts/compare_forces.py $LOGS/dump_corr_N1_1x8_step<S-1> $LOGS/dump_corr_N2_8x15_step<S-1>
+#
+# Layouts must agree to roundoff: the traversal is layout-independent
+# (verified per particle at 2M bodies, 1x4 against 1x8, steps 0-3).
 N=${1:-2000000}
 STEPS=${2:-10}
 NODES=${SLURM_JOB_NUM_NODES:-1}
 PPN=$PES_PER_DOMAIN
-run_one corr "$N" 1 1 8 1 "$STEPS"                         # 1 process, 8 PEs
-run_one corr "$N" 1 "$NUMA_DOMAINS" "$PPN" 1 "$STEPS"      # 1 full node
+D=$NUMA_DOMAINS
+corr() {  # nodes procs_per_node ppn
+  run_one corr "$N" "$1" "$2" "$3" 1 "$STEPS" \
+    -dumpstep=$((STEPS - 1)) -dumpprefix="$LOGS/dump_corr_N$1_$2x$3"
+}
+corr 1 1 8                         # one process, 8 PEs: the reference
+corr 1 "$D" "$PPN"                 # one full node
 if [ "$NODES" -ge 2 ]; then
-  run_one corr "$N" 2 2 "$PPN" 1 "$STEPS"                  # 2 nodes, 2 procs each
-  run_one corr "$N" 2 "$NUMA_DOMAINS" "$PPN" 1 "$STEPS"    # 2 full nodes
+  corr 2 2 "$PPN"                  # two nodes, two processes each
+  corr 2 "$D" "$PPN"               # two full nodes
 fi
-[ "$NODES" -ge 4 ] && run_one corr "$N" 4 "$NUMA_DOMAINS" "$PPN" 1 "$STEPS"
+[ "$NODES" -ge 4 ] && corr 4 "$D" "$PPN"
 true
