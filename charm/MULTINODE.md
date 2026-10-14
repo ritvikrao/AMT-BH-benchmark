@@ -30,11 +30,16 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
 ## Status
 
 - [x] **0.1** Branch `charm-multinode` from upstream `main` (2563694).
-- [ ] **0.2** Cross-implementation notes (hpx, ttg-parsec, ItoyoriFBC, julia_dagger).
+- [x] **0.2** Cross-implementation notes: README "Comparison with the other
+      implementations". **Needs a project-level decision:** the opening
+      criteria differ, so an equal `theta` is not an equal accuracy across
+      runtimes.
 - [ ] **0.3** `build.sh`: LCI override, pinned Charm++ ref, tracing with `TRACE=`.
-- [ ] **0.4** Harness in `scripts/` with machine files. Written; the 1-node
-      smoke must reproduce 0.447 s/step (8x15, 2M) before it is trusted.
+- [x] **0.4** Harness in `scripts/` with machine files. Verified by the smoke
+      job below: its 1-node run reproduces the 2026-09-10 energy series bit for
+      bit, at 0.399 s/step against 0.447 then (different node, newer Reconverse).
 - [ ] **1** E_P bug: confirm, fix, force-dump + direct-sum tooling.
+- [ ] **1b** Integrator: `kickDriftKick` is first order, not leapfrog (see Step 1b).
 - [ ] **2** First multi-node runs; correctness matrix on 1, 2 and 4 nodes.
 - [ ] **3a** Particle exchange: DM-to-DM with exact counts (no P x T messages).
 - [ ] **3b** Moments skeleton: only refine where the PE has particles.
@@ -47,6 +52,7 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
 | date | machine | what | commit | job |
 |---|---|---|---|---|
 | 2026-09-10 | Delta, 1 node | 1-120 cores, both layouts, 138 runs ([report](results/REPORT-1node-2026-09-10.txt)) | 2cdf1d5 | 21945686 |
+| 2026-10-14 | Delta, 2 nodes (cn044, cn130) | **first 2-node run**: 2M, 2x8x15 = 240 PEs, graceful, 0.383 s/step (1 node: 0.399). E_P deviates 6.6e-3 from 1 node, 6 spikes in 10 steps: the Step 1 bug, not yet fixed | 8d1b285 binary | 22903631 |
 
 ## Resuming on a new machine
 
@@ -111,6 +117,30 @@ cannot see it, because every bucket loses the same mass.
 3. Add a permanent force-dump option (`-dumpstep`), an O(N²) direct-sum
    reference, and `compare_forces.py`.
 4. Rerun `compare_energy.py`: the fix is confirmed if spike counts go to 0.
+
+## Step 1b: the integrator is first order
+
+`DataManager::kickDriftKick` applies, once the forces a_n are in: kick dt/2,
+drift dt, then kick dt/2 again **with the same a_n**. Step 0 instead opens
+with a full-dt kick. That is not leapfrog: the drift velocity ends up advanced
+by the average of a_(n-1) and a_n where a_n is needed. Running the exact
+update sequence on a harmonic oscillator to T = 10:
+
+| dt | this code, abs. position error | leapfrog |
+|---|---|---|
+| 0.1 | 1.9e-1 | 2.3e-3 |
+| 0.05 | 9.0e-2 | 5.7e-4 |
+| 0.025 | 4.4e-2 | 1.4e-4 |
+
+The error halves when dt halves (first order); leapfrog's quarters. Every
+other implementation uses leapfrog. It dates back to the initial import
+(0fe2be0).
+
+**Fix:** fused KDK. Each step, after the forces: if n > 0, close the previous
+step with a kick of dt/2 (the velocity is now synchronised at t_n, so E_K
+is measured here, at the same time as E_P); then open with a kick of dt/2 and
+drift dt. This changes every trajectory, so it is a commit of its own, made
+after the E_P fix so the two effects stay separable.
 
 ## Step 3: costs that grow with P x T
 

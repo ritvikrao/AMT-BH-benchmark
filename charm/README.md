@@ -607,6 +607,31 @@ one softened self term `-m_i/eps`; Eq. 12 sums over `i < j` only, so that term
 is removed before reporting. Softening makes this term finite rather than
 infinite, so it is easy to miss.
 
+## Comparison with the other implementations
+
+The repository holds four other implementations: `hpx/`, `ttg-parsec/`,
+`ItoyoriFBC/` and `julia_dagger/`. The specification leaves several choices
+open, and they did not all choose alike. These are the differences that change
+what a cross-runtime timing comparison measures. Surveyed 2026-10-14 at
+upstream `2563694`.
+
+| | this code | others | consequence |
+|---|---|---|---|
+| **Opening criterion: size** | `rsq`, the largest squared distance from the node's centre of mass to a corner of the bounding box of its particles (`Node.h` `getMomentsFromChildren`/`getMomentsFromParticles`) | cubic cell edge `L/2^depth` (HPX, Itoyori, Julia; TTG uses the edge, plus the target's radius) | Not the same quantity. A full cell with its COM at the centre gives about 0.87x the edge, so ours opens *fewer* nodes than an edge test. A lopsided cell gives up to 1.73x, so ours opens more. A sparse cell, with a bounding box tighter than the cell, gives less. Equal `theta` is not equal accuracy, in either direction |
+| **Opening criterion: distance** | node COM to the **bucket's** COM, with no allowance for the bucket's own size (`gravity.h:16-17`) | node COM to each particle (HPX, Itoyori, Julia); to the target leaf's centre minus its radius (TTG) | Particles at a bucket's edge can see an accepted node that is closer to them than `theta` allows |
+| **Multipole order** | monopole | monopole; TTG adds quadrupole by default | TTG is more accurate at equal `theta` |
+| **Leaf size** | `-b=10` | 1 (HPX), 8 (TTG, Itoyori), 16 (Julia) | Shifts the split between direct and approximated interactions |
+| **Softening in `E_P`** | softened, self-term removed | Itoyori and HPX softened; Julia and TTG unsoftened | `E_T` values are not comparable across runtimes, only their drift |
+| **Units and G** | runtime `-G`, `-eps` | HPX hard-codes G in AU, kg, day; Julia defaults to it | Same physical system needs the masses rescaled by `G_data/G_impl` where G is fixed |
+| **Distribution** | SFC decomposition every step; remote nodes fetched on demand and cached per PE | HPX: SFC + LET all-to-all; Julia: LET, no rebalancing; Itoyori: whole tree replicated on every node; TTG: one process | Communication volume per step differs by design, not only by runtime |
+| **Timed scope** | per-phase timers; input excluded | input excluded everywhere; HPX also reports a total without output; Julia drops a warm-up step; TTG times only tree build and traversal | Compare steady-state time per step, with input and output excluded |
+
+The first two rows matter most. An equal `theta` across runtimes is not an equal
+accuracy, so a fair comparison should either fix a target force error and tune
+`theta` per implementation, or move every implementation to one opening
+criterion. That decision belongs to the project, not to one team (see
+MULTINODE.md).
+
 ## Status
 
 Working: distributed tree build and traversal, SFC decomposition rebalanced
