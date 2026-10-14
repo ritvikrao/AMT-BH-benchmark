@@ -4,6 +4,7 @@
 #   scripts/submit.sh NODES MINUTES CAMPAIGN [campaign args...]
 #   WAIT=1 scripts/submit.sh 2 50 correctness     # wait for the fast queue's slot
 #   DRY=1  scripts/submit.sh 8 90 strong 8000000  # show the choice, submit nothing
+#   PARTITION=cpu scripts/submit.sh 1 30 gendata 48000000   # force a partition
 #
 # CAMPAIGN is scripts/campaigns/CAMPAIGN.sh, run by scripts/job.sh inside the
 # allocation. Rules, from the machine file:
@@ -31,7 +32,9 @@ start_of() {  # account partition -> epoch seconds of the estimated start
   date -d "$s" +%s
 }
 
-if [ "$NODES" -le "$FAST_MAX_NODES" ] && [ "$MINUTES" -le "$FAST_MAX_MINUTES" ]; then
+if [ -n "${PARTITION:-}" ]; then
+  PART=$PARTITION     # forced, e.g. to keep the one fast-queue slot free
+elif [ "$NODES" -le "$FAST_MAX_NODES" ] && [ "$MINUTES" -le "$FAST_MAX_MINUTES" ]; then
   PART=$FAST_PARTITION
   while [ "${WAIT:-0}" = 1 ] &&
         [ -n "$(squeue -h -u "$USER" -p "$PART" -o %i 2>/dev/null)" ]; do

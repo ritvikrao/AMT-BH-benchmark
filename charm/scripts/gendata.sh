@@ -25,11 +25,17 @@ jobs=0
 for n in "$@"; do
   out=$DATA/n${n}.csv
   [ -s "$out" ] && { echo "skip $n (exists)"; continue; }
-  ( python3 "$BH_SCRIPTS/mkconfig.py" "$n" "$out" "$DATA/n${n}.json" &&
-    python3 "$GEN" -c "$DATA/n${n}.json" -o "$DATA/.partial_n${n}.csv" > /dev/null &&
-    mv "$DATA/.partial_n${n}.csv" "$out" &&
-    echo "done $n ($(stat -c%s "$out") bytes)" ) &
+  ( if python3 "$BH_SCRIPTS/mkconfig.py" "$n" "$out" "$DATA/n${n}.json" &&
+       python3 "$GEN" -c "$DATA/n${n}.json" -o "$DATA/.partial_n${n}.csv" > /dev/null &&
+       mv "$DATA/.partial_n${n}.csv" "$out"; then
+      echo "done $n ($(stat -c%s "$out") bytes)"
+    else
+      rm -f "$DATA/.partial_n${n}.csv"; echo "FAILED $n"; exit 1
+    fi ) &
   jobs=$((jobs + 1))
-  if [ $jobs -ge "$PARALLEL" ]; then wait -n; jobs=$((jobs - 1)); fi
+  if [ $jobs -ge "$PARALLEL" ]; then wait -n || failed=1; jobs=$((jobs - 1)); fi
 done
-wait
+while [ $jobs -gt 0 ]; do wait -n || failed=1; jobs=$((jobs - 1)); done
+# The generator holds every body in memory (~3 GB per 10M): sizes past ~30M
+# can be killed on a login node. Run those inside a job: campaigns/gendata.sh.
+exit ${failed:-0}
