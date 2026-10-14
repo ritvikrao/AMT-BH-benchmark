@@ -307,8 +307,7 @@ void Main::commence(){
   dataManagerProxy.loadParticles(CkCallbackResumeThread((void *&)redMsg));
 
   BoundingBox &universe = *((BoundingBox *)redMsg->getData());
-  Real pad = 0.001;
-  universe.expand(pad);
+  universe.expand(UNIVERSE_PAD);
   CkPrintf("[Main] universe bb: %f %f %f %f %f %f\n",
                                 universe.box.lesser_corner.x,
                                 universe.box.lesser_corner.y,

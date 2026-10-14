@@ -1298,8 +1298,10 @@ void DataManager::advance(CkReductionMsg *msg){
   BoundingBox myBox;
   kickDriftKick(myBox.box,myBox.kineticEnergy,myBox.potentialEnergy);
 
-  Real pad = 0.001;
-  myBox.expand(pad);
+  // Unpadded: the padding is applied once to the reduced universe, in
+  // recvUnivBoundingBox. Padding each PE's box by a fraction of its own extent
+  // before the union made the universe -- and so every Morton key and the
+  // whole tree -- depend on how particles were spread over PEs.
   myBox.numParticles = myNumParticles;
 
   if(CkMyPe() == 0){
@@ -1364,6 +1366,8 @@ void DataManager::advance(CkReductionMsg *msg){
 
 void DataManager::recvUnivBoundingBox(CkReductionMsg *msg){
   BoundingBox &univBB = *((BoundingBox *)msg->getData());
+  // Same padding as the first step's universe (Main::commence).
+  univBB.expand(UNIVERSE_PAD);
   decompose(univBB);
   delete msg;
 }

@@ -10,6 +10,10 @@
 #define TREE_KEY_BITS (sizeof(Key)*CHAR_BIT)
 
 #define BITS_PER_DIM 21
+// The universe box is grown by this fraction of its extent on each side, so
+// no particle sits exactly on its greater corner (which would hash past the
+// last Morton cell). Applied once to the global box, never per PE.
+#define UNIVERSE_PAD 0.001
 #define BOXES_PER_DIM (1<<(BITS_PER_DIM))
 
 #define NDIMS 3
