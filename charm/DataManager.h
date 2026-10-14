@@ -153,6 +153,7 @@ class DataManager : public CBase_DataManager {
   void kickDriftKick(OrientedBox<Real> &box, Real &kineticEnergy, Real &potentialEnergy);
 
   void writeSnapshot();
+  void dumpForces();
 
   void loadParticlesBinary(const CkCallback &cb);
   void loadParticlesCsv(const CkCallback &cb);

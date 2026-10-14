@@ -44,3 +44,7 @@ conv-host
 # Measurement summaries are committed; raw run logs stay on the cluster
 !results/*.csv
 !results/*.log
+
+# tools/direct_sum binary and -dumpstep output
+tools/direct_sum
+*_pe*.bin

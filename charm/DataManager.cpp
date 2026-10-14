@@ -96,6 +96,7 @@ void DataManager::loadParticlesBinary(const CkCallback &cb){
     offset = myid*avgParticlesPerPE+rem;
   }
   myNumParticles = avgParticlesPerPE;
+  const long firstRecord = offset;
   offset *= SIZE_PER_PARTICLE;
   offset += PREAMBLE_SIZE;
 
@@ -123,6 +124,7 @@ void DataManager::loadParticlesBinary(const CkCallback &cb){
     myParticles[numParticlesDone].velocity.y = tmp[4];
     myParticles[numParticlesDone].velocity.z = tmp[5];
     myParticles[numParticlesDone].mass = tmp[6];
+    myParticles[numParticlesDone].id = firstRecord + numParticlesDone;
 
     myParticles[numParticlesDone].acceleration.x = 0.0;
     myParticles[numParticlesDone].acceleration.y = 0.0;
@@ -297,6 +299,7 @@ void DataManager::receiveCsvCounts(CkReductionMsg *msg){
     int done = 0;
     while(done < myNumParticles && std::getline(partFile, line)){
       if(!parseCsvRecord(line, myParticles[done])) continue;
+      myParticles[done].id = myFirst + done;
       myBox.grow(myParticles[done].position);
       done++;
     }
@@ -1294,6 +1297,11 @@ void DataManager::advance(CkReductionMsg *msg){
     writeSnapshot();
     timers.stop(PHASE_OUTPUT);
   }
+  if(iteration == globalParams.dumpStep){
+    timers.start(PHASE_OUTPUT);
+    dumpForces();
+    timers.stop(PHASE_OUTPUT);
+  }
 
   BoundingBox myBox;
   kickDriftKick(myBox.box,myBox.kineticEnergy,myBox.potentialEnergy);
@@ -1526,6 +1534,41 @@ void DataManager::writeSnapshot(){
     CkPrintf("(%d) output: %s\n", CkMyPe(), err.c_str());
     CkAbort("cannot write ParaView output\n");
   }
+}
+
+// -dumpstep: every particle's force and potential, as the traversal just
+// computed them and before the integrator moves anything. One file per PE,
+// <prefix>_step<k>_pe<PE>.bin, of fixed 72-byte little-endian records:
+//
+//   int64 id; double x, y, z, mass; double ax, ay, az, phi;
+//
+// with G applied and the softened self-term removed from phi -- the same
+// physical quantities kickDriftKick uses. scripts/compare_forces.py matches
+// records by id across runs; tools/direct_sum.cpp computes the exact values
+// for the same positions.
+void DataManager::dumpForces(){
+  char name[1024];
+  snprintf(name, sizeof(name), "%s_step%d_pe%d.bin",
+           globalParams.dumpPrefix.c_str(), iteration, CkMyPe());
+  FILE *f = fopen(name, "wb");
+  if(f == NULL){
+    CkPrintf("(%d) cannot open %s for writing\n", CkMyPe(), name);
+    CkAbort("dumpForces: open failed\n");
+  }
+  const Real G = globalParams.G;
+  const Real eps = sqrt(globalParams.epssq);
+  for(int i = 0; i < myNumParticles; i++){
+    const Particle &p = myParticles[i];
+    const Real selfPotential = (eps > 0.0) ? -p.mass/eps : 0.0;
+    struct { int64_t id; double v[8]; } rec;
+    rec.id = p.id;
+    rec.v[0] = p.position.x; rec.v[1] = p.position.y; rec.v[2] = p.position.z;
+    rec.v[3] = p.mass;
+    rec.v[4] = G*p.acceleration.x; rec.v[5] = G*p.acceleration.y; rec.v[6] = G*p.acceleration.z;
+    rec.v[7] = G*(p.potential - selfPotential);
+    if(fwrite(&rec, sizeof(rec), 1, f) != 1) CkAbort("dumpForces: write failed\n");
+  }
+  fclose(f);
 }
 
 void DataManager::kickDriftKick(OrientedBox<Real> &box, Real &kineticEnergy, Real &potentialEnergy){

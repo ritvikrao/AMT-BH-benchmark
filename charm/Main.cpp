@@ -128,6 +128,14 @@ void Main::setParameters(CkArgMsg *m){
   }
   CkPrintf("timers: %s\n", timerSpec.c_str());
 
+  globalParams.dumpStep = params.getiparam("dumpstep", -1, table);
+  globalParams.dumpPrefix = params.getsparam("dumpprefix", table);
+  if(globalParams.dumpPrefix.empty()) globalParams.dumpPrefix = "forces";
+  if(globalParams.dumpStep >= 0){
+    CkPrintf("dump: forces at step %d to %s_step%d_pe*.bin\n", globalParams.dumpStep,
+             globalParams.dumpPrefix.c_str(), globalParams.dumpStep);
+  }
+
   globalParams.output.prefix = params.getsparam("output", table);
   globalParams.output.frequency =
       params.getiparam("outputfreq", DEFAULT_OUTPUT_FREQ, table);

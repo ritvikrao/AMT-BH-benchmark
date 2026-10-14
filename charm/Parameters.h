@@ -45,6 +45,10 @@ struct Parameters {
 
   // Bit per Phase; see Timers.h. 0 means no timing at all.
   int timerMask;
+  // -dumpstep=k writes every particle's force and potential at step k
+  // (dumpForces); -1, the default, writes nothing.
+  int dumpStep;
+  std::string dumpPrefix;
 
   // ParaView snapshots; disabled unless a prefix was given. See VtkOutput.h.
   OutputConfig output;
@@ -70,6 +74,8 @@ struct Parameters {
     p | cacheLineSize;
     p | iterations;
     p | timerMask;
+    p | dumpStep;
+    p | dumpPrefix;
     p | output;
   }
 

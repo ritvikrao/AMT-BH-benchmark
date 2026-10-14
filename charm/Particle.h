@@ -16,10 +16,14 @@ struct Particle : public ExternalParticle {
   Vector3D<Real> velocity;
   Vector3D<Real> acceleration;
   Real potential;
+  // 0-based index of the record in the input file: stable across layouts and
+  // steps, so per-particle output (-dumpstep) can be matched between runs.
+  int64_t id;
 
   Particle() : 
     potential(0.0),
-    acceleration(0.0)
+    acceleration(0.0),
+    id(-1)
   {
   }
 
