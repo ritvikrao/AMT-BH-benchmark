@@ -63,7 +63,6 @@ DataManager::DataManager() :
   numInteractions[2] = 0;
 #endif
   avgIterationRuntime = 0.0;
-  savedEnergy = 0.0;
   timers.init(globalParams.iterations, globalParams.timerMask);
 }
 
@@ -377,9 +376,10 @@ void DataManager::decompose(const BoundingBox &universe){
     // E_T = E_K + E_P should hold steady across the run; that is the
     // whitepaper's correctness check (Section 6).
     //
-    // These energies were computed by the previous step's kickDriftKick, from
-    // the state at the *start* of that step, so they are labelled with that
-    // step's index. Before the first advance there is nothing to report yet.
+    // These energies were computed by the previous step's kickDriftKick, both
+    // at that step's time t_n (E_K from the synchronised velocity between
+    // the fused kicks), so they are labelled with that step's index. Before
+    // the first advance there is nothing to report yet.
     if(iteration > 0){
       CkPrintf("[ENERGY] step %d E_K %.10g E_P %.10g E_T %.10g\n",
                 iteration-1,
@@ -1571,32 +1571,32 @@ void DataManager::dumpForces(){
   fclose(f);
 }
 
+// Leapfrog (kick-drift-kick), with each step's closing kick fused into the
+// next step's opening one, since both use the same forces a_n:
+//
+//   n > 0:  v += dt/2 a_n      close step n-1: v is now v(t_n)
+//           E_K(t_n) from v    the same instant E_P(t_n) is computed at
+//   all n:  v += dt/2 a_n      open step n:    v(t_n + dt/2)
+//           x += dt v          x(t_{n+1})
+//
+// One force evaluation per step, second order, symplectic. Between steps the
+// stored velocities are the half-step ones, v(t_n - dt/2) when step n's
+// forces are computed -- which is what -output snapshots record.
+//
+// (Until 2026-10 this kicked dt/2, drifted, and kicked dt/2 again with the
+// same a_n, opening step 0 with a full dt: first order, MULTINODE.md Step 1b.)
 void DataManager::kickDriftKick(OrientedBox<Real> &box, Real &kineticEnergy, Real &potentialEnergy){
   Particle *pstart = myParticles.getVec();
   Particle *pend = myParticles.getVec()+myNumParticles;
-  Real dt_k1, dt_k2;
 
   // The traversal kernel accumulates potential and acceleration with G factored
   // out (i.e. as though G == 1) so that the inner loop stays a plain sum. G is
   // restored here, once per particle rather than once per interaction.
   const Real G = globalParams.G;
-
-  if(iteration == 0){
-    dt_k1 = globalParams.dtime;
-    // won't have KE stored by a previous 
-    // iteration for this one
-    for(Particle *p = pstart; p != pend; p++){
-      kineticEnergy += p->mass*(p->velocity.lengthSquared()); 
-    }
-    kineticEnergy /= 2.0;
-  }
-  else{
-    dt_k1 = globalParams.dthf;
-    kineticEnergy = savedEnergy;
-    savedEnergy = 0.0;
-  }
-
-  dt_k2 = globalParams.dthf;
+  const Real dthf = globalParams.dthf;
+  const Real dt = globalParams.dtime;
+  // Step 0 starts from the input's synchronised velocities: nothing to close.
+  const Real dtClose = (iteration == 0) ? 0.0 : dthf;
 
   // A bucket is always opened against itself (its own centre of mass sits at
   // zero distance), so every particle picks up one particle-particle term
@@ -1617,21 +1617,16 @@ void DataManager::kickDriftKick(OrientedBox<Real> &box, Real &kineticEnergy, Rea
     // over unordered pairs, hence the one half.
     potentialEnergy += 0.5*p->mass*phi;
 
-    // kick
-    p->velocity += dt_k1*accel;
-    savedEnergy += p->mass*(p->velocity.lengthSquared()); 
-    // drift
-    p->position += globalParams.dtime*p->velocity;
-    // kick
-    p->velocity += dt_k2*accel;
-    
+    p->velocity += dtClose*accel;
+    kineticEnergy += 0.5*p->mass*p->velocity.lengthSquared();
+    p->velocity += dthf*accel;
+    p->position += dt*p->velocity;
+
     box.grow(p->position);
 
     p->acceleration = Vector3D<Real>(0.0);
     p->potential = 0.0;
-
   }
-  savedEnergy /= 2.0;
 }
 
 void DataManager::findMinVByA(DtReductionStruct &dtred){

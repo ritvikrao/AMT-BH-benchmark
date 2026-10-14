@@ -140,7 +140,6 @@ class DataManager : public CBase_DataManager {
   CacheStats nodeReqs;
   CacheStats partReqs;
 
-  Real savedEnergy;
 
 #ifdef STATISTICS
   CmiUInt8 numInteractions[3];
