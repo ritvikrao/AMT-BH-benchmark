@@ -1195,10 +1195,15 @@ void DataManager::recvNode(NodeReplyMsg *msg){
   
   node->deserialize(msg->data, msg->nn);
 
+#ifdef DEBUG_TREE_CHECK
+  // Walks the attached subtree writing its structure into a string nobody
+  // reads: useful under a debugger, pure cost otherwise -- once per fetched
+  // subtree, and fetches grow with the PE count.
   ostringstream oss;
   oss << "(" << CkMyPe() << ") key check: " << msg->key << endl;
   TreeChecker checker(oss);
   fillTrav.topDownTraversal_local(node,&checker);
+#endif
 
   nodeReqs.decrRequests();
   nodeReqs.decrDeliveries(req.requestors.length());
@@ -1255,9 +1260,6 @@ void DataManager::finishIteration(){
       CkAbort("particles missed by the traversal\n");
     }
   }
-
-  InteractionChecker ic;
-  fillTrav.postorderTraversal(root,&ic);
 
   DtReductionStruct dtred;
   findMinVByA(dtred);
@@ -1482,7 +1484,7 @@ void DataManager::addBucketPartInteractions(Key k, CmiUInt8 pp){
 // traversal is exact every bucket everywhere lands on the same figure, so any
 // spread at all is the bug.
 void DataManager::checkTraversalMass(){
-  std::map<Key,Real> &seen = traversalMass[CkMyPe()];
+  std::map<Key,Real> &seen = traversalMass;
   if(seen.empty()) return;
 
   Real lo = seen.begin()->second;

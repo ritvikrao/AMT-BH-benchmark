@@ -112,7 +112,7 @@ void MomentsWorker::setTypeFromChildren(Node<ForceData> *node){
 }
 
 #ifdef CHECK_TRAVERSAL_MASS
-std::map<Key,Real> traversalMass[MAX_TRAVERSAL_MASS_PES];
+thread_local std::map<Key,Real> traversalMass;
 #endif
 
 int TraversalWorker::work(Node<ForceData> *node){
@@ -145,7 +145,7 @@ int TraversalWorker::work(Node<ForceData> *node){
   }
 
 #ifdef CHECK_TRAVERSAL_MASS
-  traversalMass[CkMyPe()][currentBucket->getKey()] += node->data.moments.totalMass;
+  traversalMass[currentBucket->getKey()] += node->data.moments.totalMass;
 #endif
   int computed = nodeBucketForce(node,currentBucket);
   state->nodeComputed(currentBucket,node->getKey());
@@ -155,7 +155,7 @@ int TraversalWorker::work(Node<ForceData> *node){
 
 void TraversalWorker::work(ExternalParticle *particle){
 #ifdef CHECK_TRAVERSAL_MASS
-  traversalMass[CkMyPe()][currentBucket->getKey()] += particle->mass;
+  traversalMass[currentBucket->getKey()] += particle->mass;
 #endif
   int computed = partBucketForce(particle,currentBucket);
   state->incrPartPartInteractions(currentBucket->getKey(),computed);
@@ -203,14 +203,5 @@ int TreeChecker::work(Node<ForceData> *node){
     os << "CHECK: " << node->getKey() << " 0 children" << endl;
   }
   return 1;
-}
-
-int InteractionChecker::work(Node<ForceData> *node){
-  if(node->getNumChildren() == 0) return 1;
-
-  for(int i = 0; i < BRANCH_FACTOR; i++){
-  }
-
-  return 0;
 }
 

@@ -75,9 +75,10 @@ class MomentsWorker : public CutoffWorker<ForceData> {
 // the mass it sees directly plus the mass of every node it approximated should
 // come to the total mass, identically for every bucket on every PE. It is the
 // invariant that catches an interaction being dropped or applied twice, which
-// energies alone only hint at. Keyed by bucket, per PE.
-extern std::map<Key,Real> traversalMass[];
-#define MAX_TRAVERSAL_MASS_PES 1024
+// energies alone only hint at. Keyed by bucket; one map per PE, which under
+// Reconverse is one per worker thread -- so no cap on the PE count (it used to
+// be an array indexed by CkMyPe(), overrun past 1024 PEs).
+extern thread_local std::map<Key,Real> traversalMass;
 #endif
 
 class State;
@@ -191,10 +192,5 @@ class TreeChecker : public CutoffWorker<ForceData> {
   int work(Node<ForceData> *node);
 };
 
-class InteractionChecker : public CutoffWorker<ForceData> {
-  public:
-  InteractionChecker() {}
-  int work(Node<ForceData> *node);
-};
 
 #endif
