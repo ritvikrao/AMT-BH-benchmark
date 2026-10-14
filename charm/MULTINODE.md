@@ -44,10 +44,11 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
       Tooling: `-dumpstep`, `tools/direct_sum.cpp`, `scripts/compare_forces.py`.
 - [x] **1b** Integrator is now leapfrog (a84e8cd): 86x smaller position error at dt=5000.
 - [x] **2** Correctness matrix on 1, 2 and 4 nodes passes
-      ([results](results/correctness-2026-10-14.txt)). Still to do: `run.sh NODES`.
-- [ ] **3a** Particle exchange: DM-to-DM with exact counts (no P x T messages).
+      ([results](results/correctness-2026-10-14.txt)). `run.sh` takes `NODES`.
+- [x] **3a** Particle exchange: DM-to-DM with exact counts (bbce8b0). 1-node series
+      identical; multi-node correctness (tag corr3a) queued behind the baseline job.
 - [ ] **3b** Moments skeleton: only refine where the PE has particles.
-- [ ] **3c** Cheap fixes: TreeChecker per fetch, InteractionChecker, traversalMass[1024].
+- [x] **3c** Cheap fixes (3a45c97), plus the Makefile now rebuilds on an APP_FLAGS change.
 - [ ] **4** Scaling on Delta 1/2/4/8 nodes: strong 8M and 32M; weak 50k/core.
 - [ ] **5** README multi-node section, results, PR upstream.
 
@@ -73,6 +74,18 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
 6. `scripts/submit.sh 2 50 correctness`, then compare the logs with
    `scripts/compare_energy.py` (see Step 2).
 7. Record the result in the table above and commit.
+
+## Jobs in flight (update as they land)
+
+| job | what | binary | state |
+|---|---|---|---|
+| 22904250 | `baseline` on 4 nodes: 2M and 8M bodies at 1, 2 and 4 nodes, before 3a | barnes-3e9fe70 | queued, cpu-interactive |
+| 22904246 | `baseline` on 8 nodes: 8-node correctness plus the 8-node timing points (reuses the 1-4 node logs) | barnes-3e9fe70 | queued, cpu, mzu, est. 2026-10-15 10:00 |
+| (feeder) | `correctness` with CORR_TAG=corr3a on 4 nodes, after 22904250 | barnes-bbce8b0 | waiting for the slot |
+
+Frozen binaries live in `$BH_WORK/bin/barnes-<commit>`. A job runs whatever
+binary exists when it *starts*, so anything queued for hours pins one with
+`BIN=`.
 
 ## Running jobs on Delta fast
 
