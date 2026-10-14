@@ -707,6 +707,15 @@ void DataManager::processSubmittedParticles(){
   int offset = 0;
 
   submittedParticles.quickSort();
+#ifdef EP_DIAG
+  for(int i = 0; i+1 < submittedParticles.length(); i++){
+    if(submittedParticles[i].index >= submittedParticles[i+1].index){
+      CkPrintf("[EPDIAG] step %d PE %d: TreePiece %d sorted before %d (smallestKey %lx vs %lx)\n",
+               iteration, CkMyPe(), submittedParticles[i].index, submittedParticles[i+1].index,
+               submittedParticles[i].smallestKey, submittedParticles[i+1].smallestKey);
+    }
+  }
+#endif
   
   myParticles.resize(myNumParticles);
 
@@ -1230,6 +1239,19 @@ void DataManager::finishIteration(){
 
   CkAssert(nodeReqs.test());
   CkAssert(partReqs.test());
+
+#ifdef EP_DIAG
+  // Every particle in a traversed bucket picks up at least its own softened
+  // self-term, so a potential of exactly zero means no bucket held it.
+  {
+    int untouched = 0;
+    for(int i = 0; i < myNumParticles; i++)
+      if(myParticles[i].potential == 0.0) untouched++;
+    if(untouched > 0)
+      CkPrintf("[EPDIAG] step %d PE %d: %d of %d particles got no interactions\n",
+               iteration, CkMyPe(), untouched, myNumParticles);
+  }
+#endif
 
   InteractionChecker ic;
   fillTrav.postorderTraversal(root,&ic);

@@ -59,6 +59,11 @@ void MomentsWorker::setLeafType(Node<ForceData> *leaf){
   else if(ownerStart < peTreePieces[curTP].index){
     // type could have been set to EmptyBucket during construction
     if(leaf->getType() == Invalid){
+#ifdef EP_DIAG
+      if(leaf->getNumParticles() > 0)
+        CkPrintf("[EPDIAG] PE %d: leaf %lx holding %d local particles marked Remote (owner %d, expected TreePiece %d)\n",
+                 CkMyPe(), leaf->getKey(), leaf->getNumParticles(), ownerStart, peTreePieces[curTP].index);
+#endif
       leaf->setType(Remote); 
       int numOwners = leaf->getOwnerEnd()-leaf->getOwnerStart()+1;
       int requestOwner = leaf->getOwnerStart()+(rand()%numOwners);
