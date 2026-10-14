@@ -87,6 +87,11 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
 | 22904250 | `baseline` on 4 nodes: 2M and 8M bodies at 1, 2 and 4 nodes, before 3a | barnes-3e9fe70 | queued, cpu-interactive |
 | 22904246 | `baseline` on 8 nodes: 8-node correctness plus the 8-node timing points (reuses the 1-4 node logs) | barnes-3e9fe70 | queued, cpu, mzu, est. 2026-10-15 10:00 |
 | (feeder) | `correctness` with CORR_TAG=corr3a on 4 nodes, after 22904250 | barnes-bbce8b0 | waiting for the slot |
+| 22904453 | `gendata 48000000` on 1 node: the 48M weak-scaling input, killed on the login node | -- | queued, cpu, mzu |
+
+Datasets on Delta (`$DATA`): 50k-8M from 2026-09-09, plus 12M, 24M and 32M
+generated 2026-10-14 (DataGenerator 15afd52, seed 20260909). 48M is pending
+(above).
 
 Frozen binaries live in `$BH_WORK/bin/barnes-<commit>`. A job runs whatever
 binary exists when it *starts*, so anything queued for hours pins one with
