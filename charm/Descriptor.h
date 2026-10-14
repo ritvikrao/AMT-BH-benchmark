@@ -139,11 +139,15 @@ struct TreePieceDescriptor {
   {
   }
 
+  // Sorted by TreePiece index, which is the order the decomposition assigned
+  // key ranges in and the order MomentsWorker::setLeafType walks them. Sorting
+  // by received keys instead breaks for TreePieces that got no particles this
+  // step, whose keys are the empty sentinels.
   bool operator<=(const TreePieceDescriptor &t){
-    return smallestKey <= t.smallestKey;
+    return index <= t.index;
   }
   bool operator>=(const TreePieceDescriptor &t){
-    return smallestKey >= t.smallestKey;
+    return index >= t.index;
   }
 };
 

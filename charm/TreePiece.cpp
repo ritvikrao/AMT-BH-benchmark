@@ -159,6 +159,10 @@ void TreePiece::finishIteration(){
   myNumParticles = 0;
   numDecompMsgsRecvd = 0;
   decompMsgsRecvd.length() = 0;
+  // The key range is this step's, not a running min/max over every step:
+  // processSubmittedParticles and startTraversal both read it.
+  smallestKey = ~Key(0);
+  largestKey = Key(0);
 
   iteration++;
 

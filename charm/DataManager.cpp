@@ -707,15 +707,13 @@ void DataManager::processSubmittedParticles(){
   int offset = 0;
 
   submittedParticles.quickSort();
-#ifdef EP_DIAG
   for(int i = 0; i+1 < submittedParticles.length(); i++){
     if(submittedParticles[i].index >= submittedParticles[i+1].index){
-      CkPrintf("[EPDIAG] step %d PE %d: TreePiece %d sorted before %d (smallestKey %lx vs %lx)\n",
-               iteration, CkMyPe(), submittedParticles[i].index, submittedParticles[i+1].index,
-               submittedParticles[i].smallestKey, submittedParticles[i+1].smallestKey);
+      CkPrintf("(%d) step %d: TreePiece %d sorted before %d\n", CkMyPe(), iteration,
+               submittedParticles[i].index, submittedParticles[i+1].index);
+      CkAbort("local TreePiece descriptors out of index order\n");
     }
   }
-#endif
   
   myParticles.resize(myNumParticles);
 
@@ -1240,18 +1238,20 @@ void DataManager::finishIteration(){
   CkAssert(nodeReqs.test());
   CkAssert(partReqs.test());
 
-#ifdef EP_DIAG
   // Every particle in a traversed bucket picks up at least its own softened
-  // self-term, so a potential of exactly zero means no bucket held it.
-  {
+  // self-term, so a potential of exactly zero means no bucket held it -- its
+  // force is missing, and so is its mass from everyone else's. That was the
+  // E_P excursion bug (MULTINODE.md, Step 1). One pass over local particles.
+  if(globalParams.epssq > 0.0){
     int untouched = 0;
     for(int i = 0; i < myNumParticles; i++)
       if(myParticles[i].potential == 0.0) untouched++;
-    if(untouched > 0)
-      CkPrintf("[EPDIAG] step %d PE %d: %d of %d particles got no interactions\n",
-               iteration, CkMyPe(), untouched, myNumParticles);
+    if(untouched > 0){
+      CkPrintf("(%d) step %d: %d of %d particles got no interactions\n",
+               CkMyPe(), iteration, untouched, myNumParticles);
+      CkAbort("particles missed by the traversal\n");
+    }
   }
-#endif
 
   InteractionChecker ic;
   fillTrav.postorderTraversal(root,&ic);
