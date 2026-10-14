@@ -62,6 +62,12 @@ $(TARGET): $(OBJECTS) .tracemode
 .tracemode: FORCE
 	@[ -f $@ ] && [ "`cat $@`" = "$(TRACE)" ] || { echo "$(TRACE)" > $@; }
 
+# Likewise APP_FLAGS: the check builds (-DCHECK_TRAVERSAL_MASS, -DEP_DIAG, ...)
+# change every object, and without this a `make APP_FLAGS=...` after a plain
+# `make` finds everything up to date and quietly hands back the plain binary.
+.appflags: FORCE
+	@[ -f $@ ] && [ "`cat $@`" = "$(APP_FLAGS)" ] || { echo "$(APP_FLAGS)" > $@; }
+
 FORCE:
 
 # Standalone input generators. These are plain C++; they do not link Charm++,
@@ -86,7 +92,7 @@ plummer: plummer.o gen_util.o
 
 clean:
 	rm -f core* $(OBJECTS) *~ $(TARGET) *.decl.h *.def.h charmrun conv-host \
-	      gen plummer plummer.o gen_util.o .tracemode
+	      gen plummer plummer.o gen_util.o .tracemode .appflags
 
 # Header dependencies. Every translation unit includes barnes.decl.h, which
 # charmc generates from barnes.ci via the pattern rule above and which a clean
@@ -96,7 +102,8 @@ clean:
 # object files in place. Eight files rebuild in seconds; a stale build costs a
 # lot more than that.
 HEADERS = $(wildcard *.h)
-$(OBJECTS): barnes.decl.h $(HEADERS)
+$(OBJECTS): barnes.decl.h $(HEADERS) .appflags
+barnes.decl.h barnes.def.h: .appflags
 plummer.o gen_util.o: $(HEADERS)
 gen: $(HEADERS)
 
