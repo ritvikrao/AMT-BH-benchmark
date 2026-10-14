@@ -1,0 +1,117 @@
+Barnes-Hut on one Delta CPU node -- re-measurement of 2026-09-10
+========================================================================
+
+Job 21945686, cn048, exclusive, 138 runs, all graceful. 10 steps each,
+medians over repetitions (3 for strong 2M, 2 for weak and strong 8M).
+
+Charm++/Reconverse with LCI dfb924cf; barnes at 2cdf1d5 (patched HEAD,
+oct-tree decomposition); -ppc=2000; FI_CXI_RX_MATCH_MODE=hybrid;
++lci_ndevices 4, or 2 at eight processes.
+
+  mp  one process per NUMA domain, +ppn 15, pemap 0-14,16-30,...
+  sp  a single process holding all PEs, same pinning
+
+This supersedes the 2026-09-09 sweep, which was measured before the CXI
+match-mode fix and so charged fabric stalls to the tree-build phase.
+
+
+STRONG SCALING, 2M bodies, multi-process  (base = 1 core)
+cores  layout   s/step  speedup   eff%  decomp  tbuild    trav   other
+    1     1x1   17.217     1.00  100.0   0.673   0.216  16.251   0.034
+    2     1x2    8.648     1.99   99.5   0.382   0.130   8.103   0.573
+    4     1x4    4.658     3.70   92.4   0.221   0.066   4.344   0.647
+    8     1x8    2.462     6.99   87.4   0.146   0.048   2.245   0.657
+   15    1x15    1.473    11.69   77.9   0.114   0.047   1.287   0.436
+   30    2x15    0.835    20.63   68.8   0.065   0.050   0.718   0.334
+   45    3x15    0.633    27.19   60.4   0.067   0.058   0.514   0.266
+   60    4x15    0.526    32.70   54.5   0.072   0.065   0.408   0.226
+   75    5x15    0.502    34.31   45.8   0.075   0.104   0.342   0.199
+   90    6x15    0.432    39.81   44.2   0.082   0.084   0.288   0.170
+  105    7x15    0.427    40.28   38.4   0.082   0.096   0.271   0.167
+  120    8x15    0.447    38.53   32.1   0.097   0.148   0.239   0.153
+
+STRONG SCALING, 2M bodies, single-process  (base = 1 core)
+cores  layout   s/step  speedup   eff%  decomp  tbuild    trav   other
+    1     1x1   17.233     1.00  100.0   0.673   0.213  16.259   0.034
+    2     1x2    8.647     1.99   99.7   0.379   0.130   8.108   0.571
+    4     1x4    4.650     3.71   92.6   0.216   0.066   4.339   0.645
+    8     1x8    2.464     6.99   87.4   0.143   0.048   2.251   0.653
+   15    1x15    1.480    11.65   77.6   0.114   0.048   1.292   0.436
+   30    1x30    0.882    19.54   65.1   0.075   0.075   0.711   0.334
+   45    1x45    0.736    23.40   52.0   0.071   0.124   0.523   0.266
+   60    1x60    0.671    25.67   42.8   0.071   0.164   0.419   0.227
+   90    1x90    0.665    25.91   28.8   0.103   0.241   0.318   0.174
+  120   1x120    0.846    20.36   17.0   0.135   0.384   0.313   0.163
+
+WEAK SCALING, 50k bodies/core, multi-process  (ideal = flat s/step)
+cores  layout   s/step  speedup   eff%  decomp  tbuild    trav   other
+    1     1x1    0.364     1.00  100.0   0.012   0.005   0.345   0.001
+    2     1x2    0.411     0.89   44.3   0.017   0.005   0.387   0.039
+    4     1x4    0.485     0.75   18.7   0.023   0.008   0.452   0.146
+    8     1x8    0.696     0.52    6.5   0.033   0.012   0.647   0.300
+   15    1x15    0.642     0.57    3.8   0.041   0.016   0.576   0.321
+   30    2x15    0.660     0.55    1.8   0.050   0.037   0.574   0.303
+   45    3x15    0.748     0.49    1.1   0.078   0.072   0.614   0.332
+   60    4x15    0.740     0.49    0.8   0.085   0.089   0.576   0.288
+   75    5x15    0.838     0.43    0.6   0.128   0.168   0.589   0.280
+   90    6x15    0.908     0.40    0.4   0.155   0.213   0.596   0.309
+  105    7x15    1.056     0.34    0.3   0.242   0.352   0.570   0.330
+  120    8x15    1.074     0.34    0.3   0.257   0.344   0.592   0.330
+
+WEAK SCALING, 50k bodies/core, single-process  (ideal = flat s/step)
+cores  layout   s/step  speedup   eff%  decomp  tbuild    trav   other
+    1     1x1    0.363     1.00  100.0   0.012   0.005   0.344   0.001
+    2     1x2    0.413     0.88   43.9   0.017   0.005   0.390   0.029
+    4     1x4    0.494     0.73   18.4   0.022   0.008   0.461   0.155
+    8     1x8    0.707     0.51    6.4   0.033   0.012   0.658   0.309
+   15    1x15    0.655     0.55    3.7   0.042   0.018   0.588   0.325
+   30    1x30    0.700     0.52    1.7   0.057   0.050   0.582   0.310
+   45    1x45    0.889     0.41    0.9   0.081   0.155   0.639   0.344
+   60    1x60    0.882     0.41    0.7   0.098   0.188   0.583   0.291
+   90    1x90    1.452     0.25    0.3   0.176   0.637   0.643   0.305
+  120   1x120    1.882     0.19    0.2   0.302   0.924   0.683   0.372
+
+STRONG SCALING, 8M bodies, multi-process  (base = 15 cores)
+cores  layout   s/step  speedup   eff%  decomp  tbuild    trav   other
+   15    1x15    5.925     1.00  100.0   0.451   0.198   5.223   1.552
+   30    2x15    3.254     1.82   91.0   0.272   0.221   2.776   1.117
+   45    3x15    2.343     2.53   84.3   0.234   0.210   1.923   0.851
+   60    4x15    1.859     3.19   79.7   0.215   0.225   1.437   0.626
+   75    5x15    1.803     3.29   65.7   0.265   0.365   1.259   0.641
+   90    6x15    1.608     3.68   61.4   0.271   0.376   1.066   0.562
+  105    7x15    1.522     3.89   55.6   0.302   0.428   0.899   0.511
+  120    8x15    1.528     3.88   48.5   0.340   0.530   0.826   0.497
+
+STRONG SCALING, 8M bodies, single-process  (base = 15 cores)
+cores  layout   s/step  speedup   eff%  decomp  tbuild    trav   other
+   15    1x15    5.926     1.00  100.0   0.448   0.199   5.231   1.564
+   30    1x30    3.406     1.74   87.0   0.282   0.317   2.791   1.123
+   45    1x45    2.823     2.10   70.0   0.276   0.574   1.959   0.867
+   60    1x60    2.398     2.47   61.8   0.262   0.662   1.442   0.613
+   90    1x90    2.457     2.41   40.2   0.298   1.051   1.115   0.526
+  120   1x120    2.651     2.24   27.9   0.389   1.393   0.898   0.475
+
+
+NOTES
+
+Traversal is the phase that scales. At 2M it goes 16.251 -> 0.239 s/step from
+1 to 120 cores, a 68x speedup at 57% efficiency; under weak scaling it is
+nearly flat, 0.345 -> 0.592 s/step over a 120-fold increase in both cores and
+bodies. Tree build is what bends the total curve, and it is now a small
+absolute cost (0.05-0.15 s/step at 2M) rather than the dominant one.
+
+Multi-process beats single-process everywhere above 30 cores: on the full
+node by 1.9x at 2M (0.447 against 0.846) and 1.7x at 8M (1.528 against 2.651). In the superseded sweep the opposite held,
+by a factor of 3.6; that was the broken fabric path, not tree-build cost.
+
+Best 2M time is 0.427 s/step at 105 cores (40x). 120 cores is marginally
+slower, 0.447, as tree build grows faster than traversal shrinks.
+
+CAVEAT ON ACCURACY. Potential energy shows intermittent one-step excursions on
+the oct-tree path, up to 4e-3 relative, reproducible per configuration and
+varying with PE count. It is pre-existing, not from the Node.h patch: patched
+and unpatched HEAD are bit-identical wherever unpatched HEAD runs. The
+particle-count decomposition of 15ad03f does not show it. See FIXES.md. The
+timings above are unaffected, but the oct-tree path should not be treated as
+numerically validated until this is understood.
+

@@ -40,3 +40,7 @@ conv-host
 *.sts
 *.projrc
 *.topo
+
+# Measurement summaries are committed; raw run logs stay on the cluster
+!results/*.csv
+!results/*.log
