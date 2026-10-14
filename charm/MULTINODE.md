@@ -17,6 +17,11 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
 - **Scale:** Delta allows up to 8 nodes (960 PEs). Larger runs will be on
   Frontier and Stampede3, so no limit may scale as O(P x TreePieces) or as a
   fixed-size array.
+- **Differences from the other implementations are documented, not silently
+  changed** ([DIFFERENCES.md](DIFFERENCES.md)). Some are tolerated, especially
+  where conforming would disadvantage us; the rest the project resolves.
+  The opening-criterion question (our MAC is not the spec's Eq. 10) is
+  **deferred** (2026-10-14).
 - **Fix the E_P excursion bug first.** Multi-node runs change the PE count,
   which is what the bug depends on, so energy cannot verify them until it is
   fixed.
