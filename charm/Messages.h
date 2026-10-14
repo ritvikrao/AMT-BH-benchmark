@@ -15,8 +15,12 @@ struct ParticleMsg : public CMessage_ParticleMsg {
   int numParticles;
 };
 
+// The decomposition's result, broadcast by PE 0: for TreePiece i, its key
+// range keys[2i..2i+1] and the exact number of particles it owns, counts[i],
+// summed from the final histogram round.
 struct RangeMsg : public CMessage_RangeMsg {
   Key *keys;
+  int *counts;
   int numTreePieces;
 };
 

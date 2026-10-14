@@ -10,10 +10,6 @@ extern CProxy_DataManager dataManagerProxy;
 extern Parameters globalParams;
 
 TreePiece::TreePiece() : 
-  myNumParticles(0),
-  numDecompMsgsRecvd(0),
-  smallestKey(~Key(0)),
-  largestKey(Key(0)),
   localTraversalState(),
   remoteTraversalState(),
   localStateID(0), 
@@ -25,32 +21,6 @@ TreePiece::TreePiece() :
   numTraversalsDone(0)
 {
   myDM = dataManagerProxy.ckLocalBranch();
-}
-
-void TreePiece::receiveParticles(ParticleMsg *msg){
-  int msgNumParticles = msg->numParticles;
-  decompMsgsRecvd.push_back(msg);
-  myNumParticles += msgNumParticles;
-  numDecompMsgsRecvd++;
-  if(smallestKey > msg->part[0].key) smallestKey = msg->part[0].key;
-  if(largestKey < msg->part[msgNumParticles-1].key) largestKey = msg->part[msgNumParticles-1].key;
-  
-  if(numDecompMsgsRecvd == CkNumPes()){
-    submitParticles();
-    numDecompMsgsRecvd = 0;
-  }
-}
-
-void TreePiece::receiveParticles(){
-  numDecompMsgsRecvd++;
-  if(numDecompMsgsRecvd == CkNumPes()){
-    submitParticles();
-    numDecompMsgsRecvd = 0;
-  }
-}
-
-void TreePiece::submitParticles(){
-  myDM->submitParticles(&decompMsgsRecvd,myNumParticles,this,smallestKey,largestKey);
 }
 
 void TreePiece::prepare(Node<ForceData> *_root, Node<ForceData> **buckets, int bucketStart, int bucketEnd){
@@ -156,13 +126,6 @@ void TreePiece::finishIteration(){
   localTraversalState.finishedIteration();
   remoteTraversalState.finishedIteration();
 
-  myNumParticles = 0;
-  numDecompMsgsRecvd = 0;
-  decompMsgsRecvd.length() = 0;
-  // The key range is this step's, not a running min/max over every step:
-  // processSubmittedParticles and startTraversal both read it.
-  smallestKey = ~Key(0);
-  largestKey = Key(0);
 
   iteration++;
 
@@ -173,10 +136,9 @@ void TreePiece::checkTraversals(){
 }
 
 void TreePiece::quiescence(){
-  CkPrintf("QUIESCENCE tree piece %d proc %d submitted %d numBuckets %d trav_done %d outstanding local %d remote %d\n", 
+  CkPrintf("QUIESCENCE tree piece %d proc %d numBuckets %d trav_done %d outstanding local %d remote %d\n", 
                 thisIndex,
                 CkMyPe(),
-                myNumParticles,
                 myNumBuckets,
                 numTraversalsDone,
                 localTraversalState.pending,

@@ -20,6 +20,7 @@ mainmodule barnes {
 
   message RangeMsg {
     Key keys[];
+    int counts[];
   };
 
   message RequestMsg;
@@ -49,8 +50,6 @@ mainmodule barnes {
 
   array[1D] TreePiece {
     entry TreePiece();
-    entry void receiveParticles(ParticleMsg *msg);
-    entry void receiveParticles();
     entry void requestMoments(Key k, int replyTo);
 
     entry void startTraversal();
@@ -70,6 +69,7 @@ mainmodule barnes {
     entry void receiveHistogram(CkReductionMsg *msg);
     entry void receiveSplitters(SplitterMsg *msg);
     entry void sendParticles(RangeMsg *msg);
+    entry void receiveParticles(ParticleMsg *msg);
     entry void receiveMoments(MomentsMsg *msg);
 
     entry void recvParticles(ParticleReplyMsg *msg);

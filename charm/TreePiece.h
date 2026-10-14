@@ -16,10 +16,6 @@
 #include "Traversal_decls.h"
 
 class TreePiece : public CBase_TreePiece {
-  int numDecompMsgsRecvd;
-  CkVec<ParticleMsg *> decompMsgsRecvd;
-  int myNumParticles;
-
   int iteration;
 
   int myNumBuckets;
@@ -34,11 +30,7 @@ class TreePiece : public CBase_TreePiece {
 
   Traversal<ForceData> trav;
 
-  Key smallestKey;
-  Key largestKey;
   DataManager *myDM;
-
-  void submitParticles();
 
   int localStateID;
   int remoteStateID;
@@ -55,9 +47,6 @@ class TreePiece : public CBase_TreePiece {
   TreePiece(CkMigrateMessage *) {}
 
   int getIndex() {return thisIndex;}
-
-  void receiveParticles(ParticleMsg *msg);
-  void receiveParticles();
 
   void prepare(Node<ForceData> *_root, Node<ForceData> **buckets, int bucketStart, int bucketEnd);
   void startTraversal();

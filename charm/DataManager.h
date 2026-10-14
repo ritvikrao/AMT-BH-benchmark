@@ -110,8 +110,30 @@ class DataManager : public CBase_DataManager {
   Node<ForceData> *root;
 
   Key *keyRanges;
+  // Exact particle count per TreePiece from the final histogram round: owned
+  // by PE 0, the RangeMsg's array elsewhere.
+  int *tpCounts;
   bool haveRanges;
   RangeMsg *rangeMsg;
+
+  // The particle exchange. Each DM sends one message per destination PE that
+  // gets any of its particles (not one per TreePiece), and a DM has all of its
+  // particles once it holds exactly the number the counts promise its local
+  // TreePieces -- no empty messages, no per-TreePiece barrier.
+  CkVec<ParticleMsg *> arrivedParticleMsgs;
+  long numParticlesArrived;
+  long numParticlesExpected;
+  // Home PE of every TreePiece (no migration, so also its location), so that a
+  // sender can address the DM rather than the TreePiece.
+  std::vector<int> tpHome;
+  // Flush state: runs of particles bound for flushDest, sent as one message.
+  int flushDest;
+  std::vector<std::pair<Particle *, int> > flushRuns;
+  void emitFlushRun();
+  int homeOf(int tp);
+  void expectParticles();
+  void tryProcessParticles();
+  void buildLocalDescriptors();
   CkVec<Node<ForceData>*> myBuckets;
 
   // I am done constructing the tree 
@@ -205,7 +227,7 @@ class DataManager : public CBase_DataManager {
   void receiveMoments(MomentsMsg *msg);
   
   // called by tree pieces
-  void submitParticles(CkVec<ParticleMsg *> *vec, int numParticles, TreePiece *tp, Key smallestKey, Key largestKey); 
+  void receiveParticles(ParticleMsg *msg);
   void requestMoments(Key k, int replyTo);
   void advance(CkReductionMsg *);
 #ifdef STATISTICS

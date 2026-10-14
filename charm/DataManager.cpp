@@ -48,7 +48,11 @@ DataManager::DataManager() :
   iteration(0),
   haveRanges(false),
   keyRanges(NULL),
+  tpCounts(NULL),
   rangeMsg(NULL),
+  numParticlesArrived(0),
+  numParticlesExpected(0),
+  flushDest(-1),
   numLocalTreePieces(-1),
   doneTreeBuild(false),
   treeMomentsReady(false),
@@ -575,34 +579,44 @@ void DataManager::receiveHistogram(CkReductionMsg *msg){
     decompIterations = 0;
     
     keyRanges = new Key[numTreePieces*2];
-    // so that by the time tree pieces start submitting
-    // particles (which can only happen after the flushParticles()
-    // below, we have the right count of local tree pieces
+    tpCounts = new int[numTreePieces];
+    memset(tpCounts, 0, sizeof(int)*numTreePieces);
     senseTreePieces();
+    // PE 0 fills keyRanges and tpCounts in sendParticlesToTreePiece
     flushParticles();
-    // PE 0 sets ranges in sendParticlesToTreePiece
-    haveRanges = true;
+
+    long total = 0;
+    for(int i = 0; i < numTreePieces; i++) total += tpCounts[i];
+    if(total != (long)globalParams.numParticles){
+      CkPrintf("[0] TreePiece counts sum to %ld, expected %d particles\n", total, globalParams.numParticles);
+      CkAbort("decomposition lost or duplicated particles\n");
+    }
 
     int numKeys = numTreePieces*2;
-
-    RangeMsg *rmsg = new (numKeys) RangeMsg;
+    RangeMsg *rmsg = new (numKeys, numTreePieces) RangeMsg;
     rmsg->numTreePieces = numTreePieces;
     memcpy(rmsg->keys,keyRanges,sizeof(Key)*numKeys);
+    memcpy(rmsg->counts,tpCounts,sizeof(int)*numTreePieces);
     thisProxy.sendParticles(rmsg);
+
+    haveRanges = true;
+    expectParticles();
+    tryProcessParticles();
   }
 
   delete msg;
 }
 
 void DataManager::flushParticles(){
+  // Leaves come out in TreePiece order and TreePieces are block-mapped, so
+  // each destination PE is one run and this PE sends a handful of messages,
+  // however many TreePieces there are. TreePieces past the last leaf own
+  // nothing and are sent nothing.
+  flushDest = -1;
+  flushRuns.clear();
   ParticleFlushWorker pfw(this);
   scaffoldTrav.preorderTraversal(sortingRoot,&pfw);
-
-  int numUsefulTreePieces = pfw.getNumLeaves(); 
-
-  for(int i = numUsefulTreePieces; i < globalParams.numTreePieces; i++){
-    treePieceProxy[i].receiveParticles();
-  }
+  emitFlushRun();
 
   // done with sorting tree; delete
   FreeTreeWorker<NodeDescriptor> freeWorker;
@@ -636,13 +650,12 @@ void DataManager::sendParticlesToTreePiece(Node<NodeDescriptor> *nd, int tp) {
   int np = nd->getNumParticles();
 
   if(np > 0){
-    ParticleMsg *msg = new (np,0) ParticleMsg;
-    memcpy(msg->part, nd->getParticles(), sizeof(Particle)*np);
-    msg->numParticles = np;
-    treePieceProxy[tp].receiveParticles(msg);
-  }
-  else{
-    treePieceProxy[tp].receiveParticles();
+    int pe = homeOf(tp);
+    if(pe != flushDest){
+      emitFlushRun();
+      flushDest = pe;
+    }
+    flushRuns.push_back(std::make_pair(nd->getParticles(), np));
   }
 
   // only PE 0 has the correct ranges
@@ -655,6 +668,7 @@ void DataManager::sendParticlesToTreePiece(Node<NodeDescriptor> *nd, int tp) {
 
     keyRanges[(tp<<1)] = nd->data.smallestKey;
     keyRanges[(tp<<1)+1] = nd->data.largestKey;
+    tpCounts[tp] = nd->data.numParticles;
 
   }
 }
@@ -664,16 +678,17 @@ void DataManager::sendParticles(RangeMsg *msg){
   if(CkMyPe() != 0){
     numTreePieces = msg->numTreePieces;
     keyRanges = msg->keys;
-    haveRanges = true;
+    tpCounts = msg->counts;
     // delete this later
     rangeMsg = msg;
+    // Flush before haveRanges: the particles being sent live in myParticles,
+    // which processing the arrivals overwrites.
     flushParticles();
-
     senseTreePieces();
 
-    if(submittedParticles.length() == numLocalTreePieces){
-      processSubmittedParticles();
-    }
+    haveRanges = true;
+    expectParticles();
+    tryProcessParticles();
   }
   else{
     CkAssert(numTreePieces == msg->numTreePieces);
@@ -697,39 +712,90 @@ void DataManager::senseTreePieces(){
   numLocalTreePieces = localTreePieces.count;
 }
 
-void DataManager::submitParticles(CkVec<ParticleMsg*> *vec, int numParticles, TreePiece * tp, Key smallestKey, Key largestKey){ 
-  submittedParticles.push_back(TreePieceDescriptor(vec,numParticles,tp,tp->getIndex(),smallestKey,largestKey));
-  myNumParticles += numParticles;
-  if(submittedParticles.length() == numLocalTreePieces &&
-     haveRanges){
-    processSubmittedParticles();
+int DataManager::homeOf(int tp){
+  if(tpHome.empty()){
+    CkLocMgr *mgr = treePieceProxy.ckLocMgr();
+    tpHome.resize(globalParams.numTreePieces);
+    for(int i = 0; i < globalParams.numTreePieces; i++)
+      tpHome[i] = mgr->homePe(CkArrayIndex1D(i));
+  }
+  return tpHome[tp];
+}
+
+void DataManager::emitFlushRun(){
+  if(flushRuns.empty()) return;
+  int total = 0;
+  for(size_t i = 0; i < flushRuns.size(); i++) total += flushRuns[i].second;
+  ParticleMsg *msg = new (total,0) ParticleMsg;
+  msg->numParticles = total;
+  Particle *out = msg->part;
+  for(size_t i = 0; i < flushRuns.size(); i++){
+    memcpy(out, flushRuns[i].first, sizeof(Particle)*flushRuns[i].second);
+    out += flushRuns[i].second;
+  }
+  flushRuns.clear();
+  thisProxy[flushDest].receiveParticles(msg);
+}
+
+// How many particles this PE's TreePieces own this step, from the counts.
+void DataManager::expectParticles(){
+  numParticlesExpected = 0;
+  for(int tp = 0; tp < numTreePieces; tp++)
+    if(homeOf(tp) == CkMyPe()) numParticlesExpected += tpCounts[tp];
+}
+
+void DataManager::receiveParticles(ParticleMsg *msg){
+  arrivedParticleMsgs.push_back(msg);
+  numParticlesArrived += msg->numParticles;
+  tryProcessParticles();
+}
+
+void DataManager::tryProcessParticles(){
+  if(!haveRanges) return;
+  CkAssert(numParticlesArrived <= numParticlesExpected);
+  if(numParticlesArrived == numParticlesExpected) processSubmittedParticles();
+}
+
+// One descriptor per local TreePiece, in index order -- the order the
+// decomposition assigned key ranges in, which MomentsWorker::setLeafType and
+// startTraversal both walk. Keys and counts come from the RangeMsg, so they are
+// exact and this step's; a TreePiece with no particles gets the empty range.
+void DataManager::buildLocalDescriptors(){
+  submittedParticles.length() = 0;
+  for(int tp = 0; tp < globalParams.numTreePieces; tp++){
+    if(homeOf(tp) != CkMyPe()) continue;
+    TreePiece *owner = treePieceProxy[tp].ckLocal();
+    CkAssert(owner != NULL);
+    int count = (tp < numTreePieces) ? tpCounts[tp] : 0;
+    Key sk = ~Key(0), lk = Key(0);
+    if(count > 0){
+      sk = keyRanges[2*tp];
+      lk = keyRanges[2*tp+1];
+    }
+    submittedParticles.push_back(TreePieceDescriptor(NULL, count, owner, tp, sk, lk));
+  }
+  if(submittedParticles.length() != numLocalTreePieces){
+    CkPrintf("(%d) %d TreePieces map here, %d are present\n", CkMyPe(),
+             submittedParticles.length(), numLocalTreePieces);
+    CkAbort("TreePiece home map disagrees with their locations\n");
   }
 }
 
 void DataManager::processSubmittedParticles(){
-  int offset = 0;
-
-  submittedParticles.quickSort();
-  for(int i = 0; i+1 < submittedParticles.length(); i++){
-    if(submittedParticles[i].index >= submittedParticles[i+1].index){
-      CkPrintf("(%d) step %d: TreePiece %d sorted before %d\n", CkMyPe(), iteration,
-               submittedParticles[i].index, submittedParticles[i+1].index);
-      CkAbort("local TreePiece descriptors out of index order\n");
-    }
-  }
-  
+  myNumParticles = numParticlesExpected;
   myParticles.resize(myNumParticles);
-
-  for(int i = 0; i < submittedParticles.length(); i++){
-    TreePieceDescriptor &descr = submittedParticles[i];
-    CkVec<ParticleMsg*> *vec = descr.vec;
-    for(int j = 0; j < vec->length(); j++){
-      ParticleMsg *msg = (*vec)[j];
-      memcpy(myParticles.getVec()+offset,msg->part,sizeof(Particle)*msg->numParticles);
-      offset += msg->numParticles;
-      delete msg;
-    }
+  int offset = 0;
+  for(int i = 0; i < arrivedParticleMsgs.length(); i++){
+    ParticleMsg *msg = arrivedParticleMsgs[i];
+    memcpy(myParticles.getVec()+offset,msg->part,sizeof(Particle)*msg->numParticles);
+    offset += msg->numParticles;
+    delete msg;
   }
+  CkAssert(offset == myNumParticles);
+  arrivedParticleMsgs.length() = 0;
+  numParticlesArrived = 0;
+
+  buildLocalDescriptors();
 
   myParticles.quickSort();
 
@@ -1338,9 +1404,13 @@ void DataManager::advance(CkReductionMsg *msg){
 
   CkAssert(activeBins.getNumCounts() == 0);
 
-  if(CkMyPe() == 0) delete[] keyRanges;
+  if(CkMyPe() == 0){
+    delete[] keyRanges;
+    delete[] tpCounts;
+  }
   else delete rangeMsg;
   keyRanges = NULL;
+  tpCounts = NULL;
 
   timers.stop(PHASE_INTEGRATION);
   timers.finishStep();
