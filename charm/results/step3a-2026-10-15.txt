@@ -1,0 +1,15 @@
+Step 3a (DM-to-DM particle exchange) on Delta: job 22918357, cn[039,045,047,...], 2026-10-15
+barnes-bbce8b0 against barnes-3e9fe70 (job 22904250, before 3a); 8x15 PEs per node, 10 steps, median of 2
+
+$ compare_energy.py --tol 1e-10 <1x8> <4 nodes> <1x8 from job 22904192>
+run                                                          steps        dK        dP spikes     drift
+b3acorr_n2000000_N1_c8_p1x8_r1.log                              10  0.00e+00  0.00e+00      0  3.15e-06
+b3acorr_n2000000_N4_c480_p32x15_r1.log                          10  0.00e+00  0.00e+00      0  3.15e-06
+corr_n2000000_N1_c8_p1x8_r1.log                                 10  0.00e+00  0.00e+00      0  3.15e-06
+
+$ compare_forces.py 1x8 vs 4 nodes x 8 x 15, step 9
+2000000 particles; positions identical: 1987508
+|da|/|a|   median 7.59e-16  p99 3.12e-15  max 6.68e-14
+dphi/phi   median 4.34e-16  p99 2.85e-15  max 6.76e-15
+identical  29322 of 2000000
+sum m*phi/2: ref -1.2334064565e-06  test -1.2334064565e-06

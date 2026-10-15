@@ -50,8 +50,9 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
 - [x] **1b** Integrator is now leapfrog (a84e8cd): 86x smaller position error at dt=5000.
 - [x] **2** Correctness matrix on 1, 2 and 4 nodes passes
       ([results](results/correctness-2026-10-14.txt)). `run.sh` takes `NODES`.
-- [x] **3a** Particle exchange: DM-to-DM with exact counts (bbce8b0). 1-node series
-      identical; multi-node correctness (tag corr3a) queued behind the baseline job.
+- [x] **3a** Particle exchange: DM-to-DM with exact counts (bbce8b0). Verified on
+      4 nodes and measured, job 22918357 ([results](results/step3a-2026-10-15.txt)):
+      decomposition at 8M on 4 nodes 0.606 -> 0.057 s, 10.6x faster.
 - [ ] **3b** Moments skeleton: only refine where the PE has particles.
 - [x] **3c** Cheap fixes (3a45c97), plus the Makefile now rebuilds on an APP_FLAGS change.
 - [ ] **4** Scaling on Delta 1/2/4/8 nodes: strong 8M and 32M; weak 50k/core.
@@ -62,6 +63,7 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
 | date | machine | what | commit | job |
 |---|---|---|---|---|
 | 2026-09-10 | Delta, 1 node | 1-120 cores, both layouts, 138 runs ([report](results/REPORT-1node-2026-09-10.txt)) | 2cdf1d5 | 21945686 |
+| 2026-10-15 | Delta, 4 nodes | **3a** (DM-to-DM exchange): 1x8 vs 4x8x15 energy identical to all digits, forces 7e-14 | bbce8b0 | 22918357 |
 | 2026-10-14 | Delta, 1/2/4 nodes | **correctness matrix**: 1x8, 1x8x15, 2x2x15, 2x8x15, 4x8x15 (480 PEs). Energy series identical to all printed digits; forces at step 9 agree per particle to 7e-14; 0 spikes; E_T drift 3.2e-6 over 10 steps | 89d55a5 | 22904192 |
 | 2026-10-14 | Delta, 2 nodes (cn044, cn130) | **first 2-node run**: 2M, 2x8x15 = 240 PEs, graceful, 0.383 s/step (1 node: 0.399). E_P deviates 6.6e-3 from 1 node, 6 spikes in 10 steps: the Step 1 bug, not yet fixed | 8d1b285 binary | 22903631 |
 
@@ -86,7 +88,7 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
 |---|---|---|---|
 | 22904250 | `baseline`, 4 nodes: 2M and 8M at 1/2/4 nodes, before 3a | barnes-3e9fe70 | **done** 2026-10-14, see "Baseline" below |
 | 22904453 | `gendata 48000000`, 1 node | -- | **done**: n48000000.csv, 7.5 GB, 15 min |
-| 22918357 | `baseline` BASELINE_TAG=b3a, 4 nodes: 3a's 4-node correctness against 1x8, and its timings | barnes-bbce8b0 | queued, cpu-interactive |
+| 22918357 | `baseline` BASELINE_TAG=b3a, 4 nodes: 3a's 4-node correctness against 1x8, and its timings | barnes-bbce8b0 | **done** 2026-10-15: correct; see "After 3a" |
 | 22904246 | `baseline`, 8 nodes: 8-node correctness and timings, before 3a (reuses the 1-4 node logs) | barnes-3e9fe70 | queued, cpu, mzu, est. 2026-10-16 10:47 |
 
 The first attempt at 3a's correctness check never ran: its WAIT=1 feeder
@@ -189,6 +191,27 @@ are maxima over PEs, so they do not add up to the step time.
   which 3a removes; 22918357 measures how much of it 3a recovers.
 - Past 2 nodes the step gets slower. **3b is not optional for
   scaling**, so it is no longer only a deferral candidate.
+
+## After 3a (job 22918357, barnes-bbce8b0)
+
+Same setup as the baseline. The speedup is relative to the baseline row
+above it.
+
+| bodies | nodes | s/step | speedup | decomposition | tree build | traversal |
+|---|---|---|---|---|---|---|
+| 2M | 1 | 0.364 | 1.14x | 0.030 | 0.112 | 0.220 |
+| 2M | 2 | 0.314 | 1.16x | 0.034 | 0.153 | 0.140 |
+| 2M | 4 | 0.359 | 1.36x | 0.032 | 0.230 | 0.112 |
+| 8M | 1 | 1.404 | 1.07x | 0.105 | 0.550 | 0.776 |
+| 8M | 2 | 1.022 | 1.18x | 0.089 | 0.551 | 0.415 |
+| 8M | 4 | 1.028 | 1.55x | 0.057 | 0.737 | 0.238 |
+
+- **Decomposition now shrinks with node count** (8M: 0.105, 0.089 and
+  0.057 s on 1, 2 and 4 nodes); before 3a it grew to 0.606 s.
+- **Tree build is now the whole problem.** It is 72% of the step at 8M on
+  4 nodes, and 4 nodes are no faster than 2. That is 3b.
+- Raw rows: [results/strong-1to4node-2026-10-15.csv](results/strong-1to4node-2026-10-15.csv),
+  where tag baseStrong is before 3a and b3aStrong is after.
 
 ## Step 3: costs that grow with P x T
 
