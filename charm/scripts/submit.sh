@@ -16,7 +16,16 @@
 #     asked every time rather than remembered.
 # Ask for a tight MINUTES: short jobs backfill, padded ones wait.
 set -euo pipefail
-here=$(cd "$(dirname "$0")" && pwd)
+here=${BH_SUBMIT_HERE:-$(cd "$(dirname "$0")" && pwd)}
+# bash reads a script as it runs it, so editing submit.sh while a WAIT=1
+# feeder sleeps in it breaks the feeder ("unexpected EOF", 2026-10-14). Run
+# from a private copy instead.
+if [ -z "${BH_SUBMIT_HERE:-}" ]; then
+  copy=$(mktemp "${TMPDIR:-/tmp}/bh-submit.XXXXXX")
+  cp "$0" "$copy"
+  BH_SUBMIT_HERE=$here exec bash "$copy" "$@"
+fi
+trap 'rm -f "$0"' EXIT
 . "$here/common.sh"
 NODES=${1:?nodes}; MINUTES=${2:?minutes}; CAMPAIGN=${3:?campaign}; shift 3
 [ -f "$here/campaigns/$CAMPAIGN.sh" ] || { echo "no campaigns/$CAMPAIGN.sh" >&2; exit 1; }

@@ -84,14 +84,14 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
 
 | job | what | binary | state |
 |---|---|---|---|
-| 22904250 | `baseline` on 4 nodes: 2M and 8M bodies at 1, 2 and 4 nodes, before 3a | barnes-3e9fe70 | queued, cpu-interactive |
-| 22904246 | `baseline` on 8 nodes: 8-node correctness plus the 8-node timing points (reuses the 1-4 node logs) | barnes-3e9fe70 | queued, cpu, mzu, est. 2026-10-15 10:00 |
-| (feeder) | `correctness` with CORR_TAG=corr3a on 4 nodes, after 22904250 | barnes-bbce8b0 | waiting for the slot |
-| 22904453 | `gendata 48000000` on 1 node: the 48M weak-scaling input, killed on the login node | -- | queued, cpu, mzu |
+| 22904250 | `baseline`, 4 nodes: 2M and 8M at 1/2/4 nodes, before 3a | barnes-3e9fe70 | **done** 2026-10-14, see "Baseline" below |
+| 22904453 | `gendata 48000000`, 1 node | -- | **done**: n48000000.csv, 7.5 GB, 15 min |
+| 22918357 | `baseline` BASELINE_TAG=b3a, 4 nodes: 3a's 4-node correctness against 1x8, and its timings | barnes-bbce8b0 | queued, cpu-interactive |
+| 22904246 | `baseline`, 8 nodes: 8-node correctness and timings, before 3a (reuses the 1-4 node logs) | barnes-3e9fe70 | queued, cpu, mzu, est. 2026-10-16 10:47 |
 
-Datasets on Delta (`$DATA`): 50k-8M from 2026-09-09, plus 12M, 24M and 32M
-generated 2026-10-14 (DataGenerator 15afd52, seed 20260909). 48M is pending
-(above).
+The first attempt at 3a's correctness check never ran: its WAIT=1 feeder
+crashed when submit.sh was edited under it. submit.sh now runs from a
+private copy.
 
 Frozen binaries live in `$BH_WORK/bin/barnes-<commit>`. A job runs whatever
 binary exists when it *starts*, so anything queued for hours pins one with
@@ -166,6 +166,29 @@ step with a kick of dt/2 (the velocity is now synchronised at t_n, so E_K
 is measured here, at the same time as E_P); then open with a kick of dt/2 and
 drift dt. This changes every trajectory, so it is a commit of its own, made
 after the E_P fix so the two effects stay separable.
+
+## Baseline before Step 3 (job 22904250, barnes-3e9fe70)
+
+Seconds per step, median of 2 runs, 8 x 15 PEs per node, 10 steps. The phases
+are maxima over PEs, so they do not add up to the step time.
+
+| bodies | nodes | s/step | decomposition | tree build | traversal |
+|---|---|---|---|---|---|
+| 2M | 1 | 0.415 | 0.101 | 0.121 | 0.228 |
+| 2M | 2 | 0.364 | 0.120 | 0.145 | 0.144 |
+| 2M | 4 | 0.487 | 0.184 | 0.274 | 0.135 |
+| 8M | 1 | 1.496 | 0.466 | 0.472 | 0.798 |
+| 8M | 2 | 1.205 | 0.439 | 0.543 | 0.432 |
+| 8M | 4 | 1.593 | 0.606 | 1.104 | 0.251 |
+
+- **Traversal scales:** 3.2x from 1 to 4 nodes at 8M.
+- **Tree build grows with node count**, and is the largest phase at
+  4 nodes. That is the moments skeleton (3b): every PE builds all ~T leaves
+  and requests their moments.
+- **Decomposition grows too.** That includes the P x T particle exchange,
+  which 3a removes; 22918357 measures how much of it 3a recovers.
+- Past 2 nodes the step gets slower. **3b is not optional for
+  scaling**, so it is no longer only a deferral candidate.
 
 ## Step 3: costs that grow with P x T
 
