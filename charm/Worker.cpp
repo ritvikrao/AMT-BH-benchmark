@@ -43,9 +43,40 @@ int MomentsWorker::work(Node<ForceData> *node){
   return 1;
 }
 
+// Ask an owner that holds particles for this Remote leaf's moments. If no owner
+// does, the leaf is empty everywhere, and the DataManager settles it once the
+// walk is done; see DataManager::settleEmptyRemoteLeaves.
+void MomentsWorker::requestMomentsOf(Node<ForceData> *leaf){
+  int requestOwner = servingOwner(leaf->getOwnerStart(),leaf->getOwnerEnd(),tpCounts);
+  if(requestOwner < 0){
+    emptyRemoteLeaves.push_back(leaf);
+    return;
+  }
+  TB_DEBUG("(%d) requestMoments %lu from tree piece %d\n", CkMyPe(), leaf->getKey(), requestOwner);
+
+  CkEntryOptions opts;
+  opts.setQueueing(CK_QUEUEING_IFIFO);
+  opts.setPriority(REQUEST_MOMENTS_PRIORITY);
+  treePieceProxy[requestOwner].requestMoments(leaf->getKey(),CkMyPe(),&opts);
+}
+
 void MomentsWorker::setLeafType(Node<ForceData> *leaf){
   int ownerStart = leaf->getOwnerStart();
   int ownerEnd = leaf->getOwnerEnd();
+
+  // A leaf with several owners is a node buildTree left unrefined because this
+  // PE holds none of its particles. None of it is ours, whichever of our
+  // TreePieces its owner range happens to start at.
+  if(ownerEnd > ownerStart){
+    if(leaf->getNumParticles() > 0){
+      CkPrintf("(%d) leaf %lx holding %d local particles has owners [%d,%d]\n",
+               CkMyPe(), leaf->getKey(), leaf->getNumParticles(), ownerStart, ownerEnd);
+      CkAbort("local particles in an unrefined multi-owner leaf\n");
+    }
+    leaf->setType(Remote);
+    requestMomentsOf(leaf);
+    return;
+  }
 
   beg:
   // is the current PE the one that owns it?
@@ -64,15 +95,8 @@ void MomentsWorker::setLeafType(Node<ForceData> *leaf){
                  CkMyPe(), leaf->getKey(), leaf->getNumParticles(), ownerStart, peTreePieces[curTP].index);
         CkAbort("local particles in a Remote leaf\n");
       }
-      leaf->setType(Remote); 
-      int numOwners = leaf->getOwnerEnd()-leaf->getOwnerStart()+1;
-      int requestOwner = leaf->getOwnerStart()+(rand()%numOwners);
-      TB_DEBUG("(%d) requestMoments %lu from tree piece %d\n", CkMyPe(), leaf->getKey(), requestOwner);
-
-      CkEntryOptions opts;
-      opts.setQueueing(CK_QUEUEING_IFIFO);
-      opts.setPriority(REQUEST_MOMENTS_PRIORITY);
-      treePieceProxy[requestOwner].requestMoments(leaf->getKey(),CkMyPe(),&opts);
+      leaf->setType(Remote);
+      requestMomentsOf(leaf);
     }
     return;
   }

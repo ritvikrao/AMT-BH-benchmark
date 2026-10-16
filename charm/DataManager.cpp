@@ -818,7 +818,9 @@ void DataManager::processSubmittedParticles(){
 
   doneTreeBuild = true;
 
-  // are all particles local to this PE? 
+  settleEmptyRemoteLeaves();
+
+  // are all particles local to this PE?
   if(root != NULL && root->getType() == Internal){
     passMomentsUpward(root);
   }
@@ -896,12 +898,21 @@ void DataManager::buildTree(){
       // The ownership criterion is safe as it stands: refining narrows the
       // node's key range whatever the particles do, and no two TreePieces
       // share a key, so a node's owners always resolve to one.
+      //
+      // A node with several owners is refined only where this PE holds some of
+      // its particles. Refining all of them gave every PE the whole skeleton of
+      // the global tree down to single-owner nodes -- about one leaf per
+      // TreePiece, each a requestMoments, so P x T requests a step -- and was
+      // the tree build phase that grew with node count (MULTINODE.md, 3b).
+      // Unrefined, such a node is one Remote leaf: its moments come from an
+      // owner that did refine it (servingOwner), and the remote traversal
+      // fetches its children only if it opens it.
       Particle *particles = node->getParticles();
       int numParticles = node->getNumParticles();
       bool separable =
           numParticles > 0 && particles[0].key != particles[numParticles-1].key;
 
-      if((node->getOwnerEnd() > node->getOwnerStart()) ||
+      if((node->getOwnerEnd() > node->getOwnerStart() && numParticles > 0) ||
          (numParticles > limit && separable)){
         refines.push_back(i);
       }
@@ -918,9 +929,28 @@ void DataManager::makeMoments(){
 
   MomentsWorker mw(submittedParticles,
                    nodeTable,
-                   myBuckets
+                   myBuckets,
+                   tpCounts,
+                   emptyRemoteLeaves
                    );
   fillTrav.postorderTraversal(root,&mw);
+}
+
+// Leaves that hold no particles anywhere: their one owner is a TreePiece with
+// none. Asking it for moments used to get an EmptyBucket back, but its PE need
+// not have built the node any more, so answer for it here -- with what that
+// reply carried, an empty bucket's moments -- and pass them up exactly as if
+// the reply had arrived. After the moments walk, so every ancestor has been
+// typed, and after doneTreeBuild, since this can complete the root.
+void DataManager::settleEmptyRemoteLeaves(){
+  for(int i = 0; i < emptyRemoteLeaves.length(); i++){
+    Node<ForceData> *leaf = emptyRemoteLeaves[i];
+    leaf->getMomentsFromParticles();
+    leaf->setParticles(NULL,0);
+    leaf->setType(RemoteEmptyBucket);
+    passMomentsUpward(leaf);
+  }
+  emptyRemoteLeaves.length() = 0;
 }
 
 Node<ForceData> *DataManager::lookupNode(Key k){
@@ -1162,9 +1192,13 @@ void DataManager::requestNode(Node<ForceData> *leaf, CutoffWorker<ForceData> *wo
     *(int *)CkPriorityPtr(reqMsg) = REQUEST_NODE_PRIORITY;
     CkSetQueueing(reqMsg,CK_QUEUEING_IFIFO);
 
-    int numOwners = leaf->getOwnerEnd()-leaf->getOwnerStart()+1;
-    int requestOwner = leaf->getOwnerStart()+(rand()%numOwners);
-    RRDEBUG("(%d) REQUEST node %lu from tp %d\n", 
+    int requestOwner = servingOwner(leaf->getOwnerStart(),leaf->getOwnerEnd(),tpCounts);
+    if(requestOwner < 0){
+      CkPrintf("(%d) Remote node %lx owned by [%d,%d] has no owner with particles\n",
+               CkMyPe(), key, leaf->getOwnerStart(), leaf->getOwnerEnd());
+      CkAbort("no PE can serve a Remote node\n");
+    }
+    RRDEBUG("(%d) REQUEST node %lu from tp %d\n",
             CkMyPe(), key, requestOwner);
     treePieceProxy[requestOwner].requestNode(reqMsg);
     request.sent = true;

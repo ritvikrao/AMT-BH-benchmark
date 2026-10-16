@@ -53,7 +53,11 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
 - [x] **3a** Particle exchange: DM-to-DM with exact counts (bbce8b0). Verified on
       4 nodes and measured, job 22918357 ([results](results/step3a-2026-10-15.txt)):
       decomposition at 8M on 4 nodes 0.606 -> 0.057 s, 10.6x faster.
-- [ ] **3b** Moments skeleton: only refine where the PE has particles.
+- [x] **3b** Moments skeleton: a multi-owner node is refined only where the PE has
+      particles, and requests go to an owner that holds particles. Verified on 4
+      Stampede3 skx nodes and measured, idev job 3605652
+      ([results](results/step3b-2026-10-16.txt)): tree build at 8M on 4 nodes
+      2.814 -> 0.025 s, step 3.910 -> 1.383 s (2.83x). Not yet re-measured on Delta.
 - [x] **3c** Cheap fixes (3a45c97), plus the Makefile now rebuilds on an APP_FLAGS change.
 - [ ] **4** Scaling on Delta 1/2/4/8 nodes: strong 8M and 32M; weak 50k/core.
 - [ ] **5** README multi-node section, results, PR upstream.
@@ -63,6 +67,7 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
 | date | machine | what | commit | job |
 |---|---|---|---|---|
 | 2026-09-10 | Delta, 1 node | 1-120 cores, both layouts, 138 runs ([report](results/REPORT-1node-2026-09-10.txt)) | 2cdf1d5 | 21945686 |
+| 2026-10-16 | Stampede3 skx, 1/2/4 nodes | **3b** (moments skeleton): old and new binaries on 1x8, 1x2x23, 2x2x23, 4x2x23 and 4x4x11 (184 PEs). Energy series identical to all printed digits; same layout old vs new, forces max 3.8e-14; new 1x8 vs 4 nodes 7.3e-14 | 3b commit (binary built from it) | 3605652 (idev) |
 | 2026-10-15 | Delta, 4 nodes | **3a** (DM-to-DM exchange): 1x8 vs 4x8x15 energy identical to all digits, forces 7e-14 | bbce8b0 | 22918357 |
 | 2026-10-14 | Delta, 1/2/4 nodes | **correctness matrix**: 1x8, 1x8x15, 2x2x15, 2x8x15, 4x8x15 (480 PEs). Energy series identical to all printed digits; forces at step 9 agree per particle to 7e-14; 0 spikes; E_T drift 3.2e-6 over 10 steps | 89d55a5 | 22904192 |
 | 2026-10-14 | Delta, 2 nodes (cn044, cn130) | **first 2-node run**: 2M, 2x8x15 = 240 PEs, graceful, 0.383 s/step (1 node: 0.399). E_P deviates 6.6e-3 from 1 node, 6 spikes in 10 steps: the Step 1 bug, not yet fixed | 8d1b285 binary | 22903631 |
@@ -70,9 +75,13 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
 ## Resuming on a new machine
 
 1. Clone the fork, `git checkout charm-multinode`.
-2. Add or check `scripts/machines/<machine>.sh`. The Frontier and
-   Stampede3 files are templates; work through every `VERIFY` item there
-   first.
+2. Add or check `scripts/machines/<machine>.sh`. The Frontier file is a
+   template; work through every `VERIFY` item there first. The Stampede3 file
+   is tested on skx (2026-10-16). It reads the core layout from `numactl -H`
+   inside a job, because Stampede3 numbers cores interleaved across sockets.
+   On Stampede3, run in an interactive allocation (`idev -p skx-dev -N 4`, held in
+   `tmux`) and start campaigns there with `bash scripts/job.sh <campaign>`.
+   `salloc` is refused by TACC's submit filter.
 3. Build: `cd charm && ./build.sh` (fetches and builds the pinned Charm++).
 4. Data: clone https://github.com/vancraar/DataGenerator, then
    `scripts/gendata.sh 2000000` (and larger sizes as needed).
@@ -213,6 +222,68 @@ above it.
 - Raw rows: [results/strong-1to4node-2026-10-15.csv](results/strong-1to4node-2026-10-15.csv),
   where tag baseStrong is before 3a and b3aStrong is after.
 
+## After 3b (Stampede3 idev job 3605652, barnes-3b)
+
+**Change.** `buildTree` used to refine every node with more than one owner
+TreePiece on every PE, so each PE built the whole skeleton of the global tree
+down to single-owner nodes and sent one `requestMoments` per skeleton leaf:
+about T requests per PE, P x T per step. Now a multi-owner node is refined only
+where the PE holds some of its particles. Elsewhere it stays a single Remote
+leaf. Its moments come from one request, and the remote traversal fetches its
+children only if it opens it.
+
+**Why it is exact.** Every TreePiece's cell is a leaf of the same octree the
+tree is built on. So a node with several owners contains each owner's whole
+cell, and any owner with particles has all of them inside the node. That
+owner's PE therefore refines the node and every ancestor of it, and can answer
+for it. Requests (moments, and the traversal's `requestNode`) now go to a random
+owner *with particles* (`servingOwner`, Descriptor.h), not a random owner. An
+empty owner's PE may never have built the node, and the responder's
+"bad request" and "Leaf children request" aborts stay as the check. A
+single-owner Remote leaf whose owner has no particles holds no particles
+anywhere. It is settled locally with an empty bucket's moments, which is
+exactly what that owner used to reply (`DataManager::settleEmptyRemoteLeaves`).
+Moments are a function of the global octree alone, so they come out the same
+whichever PE computes them. Only the summation order of forces changes, where a
+node's approximation moves between the local and the remote traversal.
+
+**Correctness** ([results](results/step3b-2026-10-16.txt)): on every layout,
+the energy series of old and new are identical to all printed digits, and so
+are the node and particle interaction counts. The "open crit" count drops by
+about 1e-5, because nodes that are empty everywhere are no longer tested.
+Forces, same layout old vs new: median 0 to 1.3e-16, max 3.8e-14. New 1x8 vs
+4 x 2 x 23: max 7.3e-14, as in the Delta matrix.
+
+**Timing.** 2 x 23 PEs per skx node, 10 steps, median of 2. The old binary was
+run back to back with the new one in the same allocation (`campaigns/ab.sh`).
+
+| bodies | nodes | s/step old | s/step new | speedup | tree build old | tree build new | traversal old | traversal new |
+|---|---|---|---|---|---|---|---|---|
+| 2M | 1 | 1.413 | 1.051 | 1.34x | 0.427 | 0.017 | 0.934 | 0.985 |
+| 2M | 2 | 1.318 | 0.794 | 1.66x | 0.599 | 0.012 | 0.705 | 0.746 |
+| 2M | 4 | 1.261 | 0.683 | 1.85x | 0.754 | 0.013 | 0.548 | 0.637 |
+| 8M | 1 | 4.495 | 2.980 | 1.51x | 1.649 | 0.105 | 2.576 | 2.659 |
+| 8M | 2 | 4.228 | 2.020 | 2.09x | 2.304 | 0.044 | 1.829 | 1.868 |
+| 8M | 4 | 3.910 | 1.383 | 2.83x | 2.814 | 0.025 | 1.245 | 1.286 |
+
+- **Tree build no longer grows with node count**. It now *shrinks* with it,
+  and is under 2% of the step everywhere (110x at 8M on 4 nodes).
+- **The step now scales**: 8M goes 2.98 -> 2.02 -> 1.38 s on 1, 2 and 4 nodes,
+  where before 3b it was flat.
+- **Traversal is the step now** (93% at 8M on 4 nodes), and it is 3-16% slower
+  than before. The nodes near the root are no longer in every PE's tree with
+  their moments, so the remote traversal fetches them (`chunkdepth` levels per
+  request) the first time a bucket opens them. Traversal also scales only
+  2.1x from 1 to 4 nodes at 8M, against 3.2x on Delta before 3b. That is the
+  next thing to look at (Step 4).
+- Stampede3 numbers are not comparable to Delta's in absolute terms: 46 PEs
+  per node instead of 120, and an older Reconverse (`~/charm_reconverse`, not
+  the `build.sh` pin).
+- One old-binary run (8M, 1 node, rep 1) printed `graceful exit` and then hung
+  at process exit until the 900 s run timeout. Its timings are complete and are
+  used. The cause was not investigated. It came after the run had finished,
+  and none of the 17 new-binary runs did it.
+
 ## Step 3: costs that grow with P x T
 
 Measure these with the phase timers at 2 and 8 nodes before rewriting
@@ -232,6 +303,9 @@ anything.
   - Fix: refine only where the PE holds particles, and route requests to the
     first owner with a non-zero count instead of `rand()`. The riskiest
     change: do it after the exchange fix, with the force dump as the check.
+  - **Done** (see "After 3b"). Requests go to a *random* owner with a
+    non-zero count rather than the first, so that the nodes near the root,
+    which nearly every PE asks for, do not all land on one PE.
 - **Cheap fixes.** The `TreeChecker` string built per fetched subtree
   (`DataManager.cpp:1188-1191`), the no-op `InteractionChecker` walk, and
   `traversalMass[1024]` (`Worker.h:79-80`), which overflows past 1024 PEs.

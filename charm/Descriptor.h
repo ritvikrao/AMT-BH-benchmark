@@ -151,6 +151,27 @@ struct TreePieceDescriptor {
   }
 };
 
+// The TreePiece to ask for a node's moments or children: one of the node's
+// owners that holds particles, or -1 if none does.
+//
+// Any owner used to do, because every PE refined every node with more than one
+// owner. Now a PE refines such a node only where it holds particles
+// (DataManager::buildTree), so only the PE of an owner with particles is sure to
+// have built it -- and every TreePiece's cell is a leaf of the same octree, so
+// all of that owner's particles lie inside a node it shares with others. An
+// owner with no particles may have nothing to answer from. Picked at random
+// among the owners with particles, so that the nodes near the root, which
+// nearly every PE asks for, are not all served by one PE.
+inline int servingOwner(int ownerStart, int ownerEnd, const int *tpCounts){
+  int n = ownerEnd-ownerStart+1;
+  int first = rand()%n;
+  for(int i = 0; i < n; i++){
+    int tp = ownerStart+(first+i)%n;
+    if(tpCounts[tp] > 0) return tp;
+  }
+  return -1;
+}
+
 struct ForceData {
   OrientedBox<Real> box;
   MultipoleMoments moments;

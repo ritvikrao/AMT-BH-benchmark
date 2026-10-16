@@ -144,6 +144,10 @@ class DataManager : public CBase_DataManager {
 
   map<Key,CkVec<int> > pendingMoments;
 
+  // Remote leaves with no particles anywhere, found by the moments walk and
+  // settled locally instead of being asked for; see settleEmptyRemoteLeaves.
+  CkVec<Node<ForceData>*> emptyRemoteLeaves;
+
   // I have processed the moment 
   // contributions from all other PEs, so that
   // the tree on this PE is now ready for 
@@ -193,6 +197,7 @@ class DataManager : public CBase_DataManager {
 
   void processSubmittedParticles();
   void makeMoments();
+  void settleEmptyRemoteLeaves();
   void flushMomentRequests();
   void respondToMomentsRequest(Node<ForceData> *,CkVec<int>&);
   Node<ForceData> *lookupNode(Key k);

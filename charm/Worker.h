@@ -49,17 +49,29 @@ class MomentsWorker : public CutoffWorker<ForceData> {
   CkVec<TreePieceDescriptor> &peTreePieces;
   map<Key,Node<ForceData>*> &nodeTable;
   CkVec<Node<ForceData>*> &buckets;
+  // This step's particle count per TreePiece, from the decomposition: which
+  // owners can answer for a node (servingOwner).
+  const int *tpCounts;
+  // Remote leaves with no particles anywhere, left for the DataManager to
+  // settle once the walk is done.
+  CkVec<Node<ForceData>*> &emptyRemoteLeaves;
 
   int curTP;
 
-  public: 
+  void requestMomentsOf(Node<ForceData> *leaf);
+
+  public:
   MomentsWorker(CkVec<TreePieceDescriptor> &petps,
                 map<Key,Node<ForceData>*> &tab,
-                CkVec<Node<ForceData>*> &bucks
-                ) : 
+                CkVec<Node<ForceData>*> &bucks,
+                const int *counts,
+                CkVec<Node<ForceData>*> &empties
+                ) :
     peTreePieces(petps),
     nodeTable(tab),
     buckets(bucks),
+    tpCounts(counts),
+    emptyRemoteLeaves(empties),
     curTP(0)
   {
   }
