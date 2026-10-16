@@ -39,7 +39,7 @@ void copyMomentsToNode(Node<ForceData> *node, const MomentsExchangeStruct &mes){
 }
 
 DataManager::DataManager() : 
-  activeBins(true),
+  activeBins(true,true),
   numTreePieces(1),
   tpMinParticles(0),
   tpMaxParticles(0),
@@ -362,6 +362,12 @@ void DataManager::decompose(const BoundingBox &universe){
   hashParticleCoordinates(universe.box);
   myParticles.quickSort();
 
+  // No traversal has run yet, so every particle weighs the same and the first
+  // decomposition is by count. Set explicitly: the loaders size myParticles
+  // without constructing its elements.
+  if(iteration == 0)
+    for(int i = 0; i < myNumParticles; i++) myParticles[i].cost = 1.0;
+
   if(CkMyPe()==0){
     float memMB = (1.0*CmiMemoryUsage())/(1<<20);
     ostringstream oss; 
@@ -442,6 +448,32 @@ void DataManager::receiveHistogram(CkReductionMsg *msg){
   CkVec<pair<Node<NodeDescriptor>*,bool> > *active = activeBins.getActive();
   CkAssert(numRecvdBins == active->length());
 
+  // What a bin weighs. By count, its particles; by cost, its particles' summed
+  // cost from the last traversal, scaled so that the whole histogram weighs
+  // the same as by count -- then -ppc still means "particles per TreePiece" on
+  // average, and the tolerance below applies unchanged. Particle counts
+  // balance the particles per PE, but not the work: a particle's interaction
+  // count varies along the space-filling curve by +-10% and more, smoothly, so
+  // a block of TreePieces cannot average it away however many it holds. On 8M
+  // bodies over 4 Stampede3 nodes, interactions per PE came out 1.28 max/mean
+  // with particles at 1.11, at -ppc 1000, 2000 and 4000 alike.
+  //
+  // Bins hold the full leaf frontier every round (keepUnrefined), so these
+  // sums are the totals. Costs are interaction counts, integers well inside a
+  // double's exact range, so the sums do not depend on the reduction's order
+  // and the decomposition stays the same on every layout.
+  double totalCost = 0.0;
+  long totalParticles = 0;
+  for(int i = 0; i < numRecvdBins; i++){
+    totalCost += descriptors[i].cost;
+    totalParticles += descriptors[i].numParticles;
+  }
+  bool byCost = globalParams.balanceByCost && totalCost > 0.0;
+  double costScale = byCost ? (double)totalParticles/totalCost : 1.0;
+  vector<double> weight(numRecvdBins);
+  for(int i = 0; i < numRecvdBins; i++)
+    weight[i] = byCost ? descriptors[i].cost*costScale : descriptors[i].numParticles;
+
   // How many leaves the refinement needs is a property of the input: the
   // splitters cut the Morton key space at midpoints rather than at medians, so
   // a clustered region keeps splitting long after an even one has stopped.
@@ -461,7 +493,7 @@ void DataManager::receiveHistogram(CkReductionMsg *msg){
   // whatever its count.
   for(int i = 0; i < numRecvdBins; i++){
     bool wantsRefine =
-        descriptors[i].numParticles > (Real)(DECOMP_TOLERANCE*globalParams.ppc) &&
+        weight[i] > (Real)(DECOMP_TOLERANCE*globalParams.ppc) &&
         descriptors[i].smallestKey != descriptors[i].largestKey;
     bool canRefine =
         numTreePieces + (BRANCH_FACTOR-1) <= globalParams.numTreePieces;
@@ -512,10 +544,10 @@ void DataManager::receiveHistogram(CkReductionMsg *msg){
   // too few candidates remain, the budget stays partly unspent; the balance
   // report prints how many TreePieces were used of how many.
   if(binsToRefine.length() == 0 && numTreePieces < globalParams.numTreePieces){
-    vector<pair<int,int> > candidates;   // (-numParticles, bin), heaviest first
+    vector<pair<double,int> > candidates;   // (-weight, bin), heaviest first
     for(int i = 0; i < numRecvdBins; i++){
       if(descriptors[i].smallestKey != descriptors[i].largestKey){
-        candidates.push_back(make_pair(-descriptors[i].numParticles,i));
+        candidates.push_back(make_pair(-weight[i],i));
       }
     }
 
@@ -1088,6 +1120,9 @@ bool CompareNodePtrToKey(void *a, Key k){
 }
 
 void DataManager::startTraversal(){
+  // grav() counts this step's interactions into each particle's cost, which
+  // the next step's decomposition balances.
+  for(int i = 0; i < myNumParticles; i++) myParticles[i].cost = 0.0;
   PE_DIAG_COUNT(particles, myNumParticles);
   PE_DIAG_COUNT(buckets, myBuckets.length());
   Node<ForceData> **bucketPtrs = myBuckets.getVec();
@@ -1205,7 +1240,7 @@ void DataManager::requestNode(Node<ForceData> *leaf, CutoffWorker<ForceData> *wo
     *(int *)CkPriorityPtr(reqMsg) = REQUEST_NODE_PRIORITY;
     CkSetQueueing(reqMsg,CK_QUEUEING_IFIFO);
 
-    int requestOwner = servingOwner(leaf->getOwnerStart(),leaf->getOwnerEnd(),tpCounts);
+    int requestOwner = servingOwner(leaf->getOwnerStart(),leaf->getOwnerEnd(),tpCounts,leaf->getKey());
     if(requestOwner < 0){
       CkPrintf("(%d) Remote node %lx owned by [%d,%d] has no owner with particles\n",
                CkMyPe(), key, leaf->getOwnerStart(), leaf->getOwnerEnd());

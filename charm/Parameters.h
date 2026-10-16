@@ -41,6 +41,14 @@ struct Parameters {
   int yieldPeriod;
   int cacheLineSize;
 
+  // -balance=count (default) cuts the decomposition by particle count;
+  // -balance=cost by the particles' measured cost, so that PEs get equal work.
+  // Cost balancing evens out the interactions per PE (1.28 -> 1.10 max/mean,
+  // 8M bodies on 4 Stampede3 nodes) but is slower there, because the PEs
+  // left holding many cheap particles then serve more of the tree to everyone
+  // else. Opt-in until serving is cheaper; MULTINODE.md, "Traversal".
+  bool balanceByCost;
+
   int iterations;
 
   // Bit per Phase; see Timers.h. 0 means no timing at all.
@@ -72,6 +80,7 @@ struct Parameters {
     p | yieldPeriod;
     p | theta;
     p | cacheLineSize;
+    p | balanceByCost;
     p | iterations;
     p | timerMask;
     p | dumpStep;

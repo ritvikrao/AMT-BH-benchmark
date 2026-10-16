@@ -47,7 +47,7 @@ int MomentsWorker::work(Node<ForceData> *node){
 // does, the leaf is empty everywhere, and the DataManager settles it once the
 // walk is done; see DataManager::settleEmptyRemoteLeaves.
 void MomentsWorker::requestMomentsOf(Node<ForceData> *leaf){
-  int requestOwner = servingOwner(leaf->getOwnerStart(),leaf->getOwnerEnd(),tpCounts);
+  int requestOwner = servingOwner(leaf->getOwnerStart(),leaf->getOwnerEnd(),tpCounts,leaf->getKey());
   if(requestOwner < 0){
     emptyRemoteLeaves.push_back(leaf);
     return;

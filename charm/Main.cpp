@@ -116,6 +116,15 @@ void Main::setParameters(CkArgMsg *m){
   globalParams.yieldPeriod = params.getiparam("yield", DEFAULT_YIELD_PERIOD, table);
   CkPrintf("yieldPeriod: %d\n", globalParams.yieldPeriod);
 
+  string balance = params.getsparam("balance", table);
+  if(balance.empty()) balance = "count";
+  if(balance != "cost" && balance != "count"){
+    CkPrintf("[Main] -balance=%s: expected 'cost' or 'count'\n", balance.c_str());
+    CkAbort("bad command line arguments\n");
+  }
+  globalParams.balanceByCost = (balance == "cost");
+  CkPrintf("balance: %s\n", balance.c_str());
+
   it = table.find("timers");
   string timerSpec = (it == table.end()) ? string(DEFAULT_TIMERS) : it->second;
   string badPhase;

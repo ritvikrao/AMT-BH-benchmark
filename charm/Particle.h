@@ -19,11 +19,17 @@ struct Particle : public ExternalParticle {
   // 0-based index of the record in the input file: stable across layouts and
   // steps, so per-particle output (-dumpstep) can be matched between runs.
   int64_t id;
+  // Interactions applied to this particle in the last traversal (grav() calls
+  // on its bucket): the weight the decomposition balances, so that PEs get
+  // equal work rather than equal particle counts. 1 until a traversal has run,
+  // so the first decomposition is by count. See DataManager::receiveHistogram.
+  Real cost;
 
   Particle() : 
     potential(0.0),
     acceleration(0.0),
-    id(-1)
+    id(-1),
+    cost(1.0)
   {
   }
 

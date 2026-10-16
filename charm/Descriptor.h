@@ -80,16 +80,21 @@ struct NodeDescriptor {
   Key smallestKey;
   Key largestKey;
 
+  // Sum of the particles' costs (Particle::cost). Filled in for the
+  // decomposition histogram only; 0 elsewhere.
+  double cost;
+
   NodeDescriptor() {
     numParticles = 0;
     largestKey = Key(0);
     smallestKey = ~largestKey;
     nodeKey = smallestKey;
+    cost = 0.0;
   }
 
-  NodeDescriptor(int np, Key nk, Key sk, Key lk) : 
+  NodeDescriptor(int np, Key nk, Key sk, Key lk, double c = 0.0) : 
     numParticles(np), 
-    nodeKey(nk), smallestKey(sk), largestKey(lk) 
+    nodeKey(nk), smallestKey(sk), largestKey(lk), cost(c)
   {
   }
 
@@ -102,10 +107,12 @@ struct NodeDescriptor {
       smallestKey = other.smallestKey;
       largestKey = other.largestKey;
       numParticles = other.numParticles;
+      cost = other.cost;
     } else {
       if(smallestKey > other.smallestKey) smallestKey = other.smallestKey;
       if(largestKey < other.largestKey) largestKey = other.largestKey;
       numParticles += other.numParticles;
+      cost += other.cost;
     }
 
   }
@@ -159,12 +166,24 @@ struct TreePieceDescriptor {
 // (DataManager::buildTree), so only the PE of an owner with particles is sure to
 // have built it -- and every TreePiece's cell is a leaf of the same octree, so
 // all of that owner's particles lie inside a node it shares with others. An
-// owner with no particles may have nothing to answer from. Picked at random
-// among the owners with particles, so that the nodes near the root, which
-// nearly every PE asks for, are not all served by one PE.
-inline int servingOwner(int ownerStart, int ownerEnd, const int *tpCounts){
+// owner with no particles may have nothing to answer from. Spread over the
+// owners with particles, so that the nodes near the root, which nearly every
+// PE asks for, are not all served by one PE.
+//
+// The spread is a hash of the node and the asking PE rather than rand(), whose
+// choices are correlated across processes: every process starts rand() from
+// the same seed and walks the same tree in much the same order. The hash is
+// deterministic and differs per asker. It measured no faster (8M bodies, 4
+// Stampede3 nodes, leaf 24): the busiest server's load comes from single-owner
+// nodes many PEs need, which no choice of owner can spread.
+inline int servingOwner(int ownerStart, int ownerEnd, const int *tpCounts, Key key){
   int n = ownerEnd-ownerStart+1;
-  int first = rand()%n;
+  // splitmix64 finalizer over (key, PE)
+  CmiUInt8 h = (CmiUInt8)key + 0x9E3779B97F4A7C15ULL*(CmiUInt8)(CkMyPe()+1);
+  h = (h ^ (h >> 30)) * 0xBF58476D1CE4E5B9ULL;
+  h = (h ^ (h >> 27)) * 0x94D049BB133111EBULL;
+  h ^= h >> 31;
+  int first = (int)(h%(CmiUInt8)n);
   for(int i = 0; i < n; i++){
     int tp = ownerStart+(first+i)%n;
     if(tpCounts[tp] > 0) return tp;

@@ -1,0 +1,141 @@
+Traversal scaling (MULTINODE.md "Traversal") on Stampede3 skx, 2026-10-16
+idev jobs 3605789, 3605876, 3605917; 2 x 23 PEs per node; 8M/2M bodies from scripts/gendata.sh; 10 steps
+Charm++ ~/charm_reconverse (Reconverse aa1bd88). Binaries built from the working tree at each stage.
+
+== 1. Where the traversal goes (-DPE_DIAG, scripts/pediag.py), 8M, committed defaults (leaf 10, chunkdepth 3)
+== diag_n8000000_N1_c46_p2x23_r1.log: 46 PEs
+   max/mean  particles  1.04  interactions  1.17  trav  1.23  compute  1.16  wait  1.75
+   mean s    trav 21.211  compute 18.544  serve 0.613  wait 2.054  (slowest PE 24: trav 26.076 compute 21.006 serve 1.588 wait 3.482)
+   corr(trav, compute) +0.908  corr(trav, wait) +0.520  corr(compute, interactions) +0.983
+   cost model: 10.63 ns/pn + 13.86 ns/pp; residual rms 2.3% of mean compute
+   fetches per PE: node 60539 (max 79731), particle 51598 (max 66224); served max/mean node  1.31 particle  1.25
+   by PE octile, mean compute (s): 17.505 20.114 18.065 20.626 18.548 16.759 17.845 18.823
+   by PE octile, interactions/particle: 922 1046 926 1060 945 901 954 1006
+== diag_n8000000_N2_c92_p4x23_r1.log: 92 PEs
+   max/mean  particles  1.08  interactions  1.25  trav  1.44  compute  1.31  wait  2.15
+   mean s    trav 13.011  compute 9.884  serve 0.917  wait 2.209  (slowest PE 23: trav 18.747 compute 11.481 serve 2.522 wait 4.744)
+   corr(trav, compute) +0.661  corr(trav, wait) +0.813  corr(compute, interactions) +0.897
+   cost model: 10.18 ns/pn + 23.76 ns/pp; residual rms 5.9% of mean compute
+   fetches per PE: node 42178 (max 54829), particle 33791 (max 43159); served max/mean node  1.40 particle  1.26
+   by PE octile, mean compute (s): 9.567 10.663 10.132 10.749 10.000 8.769 9.437 9.611
+   by PE octile, interactions/particle: 922 1046 926 1060 963 854 968 1009
+== diag_n8000000_N4_c184_p8x23_r1.log: 184 PEs
+   max/mean  particles  1.11  interactions  1.28  trav  1.53  compute  1.55  wait  2.05
+   mean s    trav 8.622  compute 5.465  serve 0.985  wait 2.172  (slowest PE 48: trav 13.159 compute 7.465 serve 1.551 wait 4.143)
+   corr(trav, compute) +0.358  corr(trav, wait) +0.868  corr(compute, interactions) +0.841
+   cost model: 9.50 ns/pn + 40.00 ns/pp; residual rms 7.4% of mean compute
+   fetches per PE: node 29166 (max 35408), particle 21521 (max 26534); served max/mean node  1.61 particle  1.24
+   by PE octile, mean compute (s): 5.213 5.885 5.672 5.884 5.693 4.754 5.397 5.220
+   by PE octile, interactions/particle: 915 1051 929 1056 994 824 969 1012
+
+== 2. Granularity does not move the imbalance (8M, 4 nodes, chunkdepth 4)
+== diagppc1000_n8000000_N4_c184_p8x23_r1.log: 184 PEs
+   max/mean  particles  1.09  interactions  1.28  trav  1.46  compute  1.41  wait  2.00
+== dup_n8000000_N4_c184_p8x23_r1.log: 184 PEs
+   max/mean  particles  1.11  interactions  1.28  trav  1.52  compute  1.50  wait  2.04
+== diagppc4000_n8000000_N4_c184_p8x23_r1.log: 184 PEs
+   max/mean  particles  1.14  interactions  1.27  trav  1.51  compute  1.40  wait  1.89
+
+== 3. Fetch duplication within a process (8M, 4 nodes, 10 steps)
+[PEDUP] process 7 PEs 23 node fetches 491153 unique 328528, particle fetches 485293 unique 422408
+[PEDUP] process 0 PEs 23 node fetches 501832 unique 357754, particle fetches 510521 unique 453634
+[PEDUP] process 1 PEs 23 node fetches 507793 unique 359766, particle fetches 496819 unique 444762
+[PEDUP] process 6 PEs 23 node fetches 504649 unique 353124, particle fetches 492983 unique 441888
+[PEDUP] process 5 PEs 23 node fetches 476476 unique 350056, particle fetches 477785 unique 430892
+[PEDUP] process 4 PEs 23 node fetches 499795 unique 350862, particle fetches 492860 unique 437885
+[PEDUP] process 3 PEs 23 node fetches 513738 unique 363364, particle fetches 503253 unique 448455
+[PEDUP] process 2 PEs 23 node fetches 495657 unique 364802, particle fetches 500372 unique 453534
+
+== 4. Chunk depth and yield, 8M, 4 nodes, leaf 10 (s/step)
+diagcd2_n8000000_N4_c184_p8x23_r1.log          1.709
+diag_n8000000_N4_c184_p8x23_r1.log             1.414
+diagcd4_n8000000_N4_c184_p8x23_r1.log          1.273
+diagcd5_n8000000_N4_c184_p8x23_r1.log          1.336
+diagy1_n8000000_N4_c184_p8x23_r1.log           1.536
+diagy20_n8000000_N4_c184_p8x23_r1.log          1.373
+
+== 5. Cost-balanced decomposition (-balance=cost), 8M, 4 nodes, chunkdepth 4, leaf 10
+== cdiagcount_n8000000_N4_c184_p8x23_r1.log: 184 PEs
+   max/mean  particles  1.11  interactions  1.28  trav  1.50  compute  1.49  wait  2.00
+   mean s    trav 7.812  compute 5.318  serve 0.778  wait 1.716  (slowest PE 48: trav 11.695 compute 7.231 serve 1.245 wait 3.219)
+== cdiagcost_n8000000_N4_c184_p8x23_r1.log: 184 PEs
+   max/mean  particles  1.55  interactions  1.10  trav  1.55  compute  1.38  wait  2.31
+   mean s    trav 7.764  compute 5.315  serve 0.772  wait 1.677  (slowest PE 117: trav 12.072 compute 5.557 serve 3.238 wait 3.278)
+
+== 6. Leaf size: accuracy against direct summation, 200k bodies, step 0, theta 0.5, 1 x 8 PEs
+== leaf 8
+|da|/|a|   median 5.26e-03  p99 3.07e-02  max 4.71e-01
+worst |da|/|a|:
+== leaf 10
+|da|/|a|   median 5.11e-03  p99 2.95e-02  max 5.22e-01
+worst |da|/|a|:
+== leaf 16
+|da|/|a|   median 4.91e-03  p99 2.75e-02  max 9.25e-01
+worst |da|/|a|:
+== leaf 24
+|da|/|a|   median 4.77e-03  p99 2.62e-02  max 2.63e-01
+worst |da|/|a|:
+== leaf 32
+|da|/|a|   median 4.68e-03  p99 2.57e-02  max 5.34e-01
+worst |da|/|a|:
+leaf 8   s/step 0.390
+leaf 10  s/step 0.360
+leaf 16  s/step 0.330
+leaf 24  s/step 0.320
+leaf 32  s/step 0.340
+
+== 7. Leaf size at scale, chunkdepth 4 (s/step)
+cd4r1_n8000000_N4_c184_p8x23_r1.log            1.307
+cd4r2_n8000000_N4_c184_p8x23_r1.log            1.340
+leaf16r1_n8000000_N4_c184_p8x23_r1.log         1.149
+leaf16r2_n8000000_N4_c184_p8x23_r1.log         1.135
+leaf24r1_n8000000_N4_c184_p8x23_r1.log         1.034
+leaf24r2_n8000000_N4_c184_p8x23_r1.log         0.996
+leaf32r1_n8000000_N4_c184_p8x23_r1.log         0.962
+cd4r1_n8000000_N2_c92_p4x23_r1.log             1.862
+cd4r2_n8000000_N2_c92_p4x23_r1.log             1.945
+leaf16r1_n8000000_N2_c92_p4x23_r1.log          1.594
+leaf24r1_n8000000_N2_c92_p4x23_r1.log          1.418
+leaf32r1_n8000000_N2_c92_p4x23_r1.log          1.373
+cd4r1_n2000000_N4_c184_p8x23_r1.log            0.570
+cd4r2_n2000000_N4_c184_p8x23_r1.log            0.572
+leaf16r1_n2000000_N4_c184_p8x23_r1.log         0.505
+leaf24r1_n2000000_N4_c184_p8x23_r1.log         0.455
+leaf32r1_n2000000_N4_c184_p8x23_r1.log         0.424
+
+== 8. Committed (1ff2080) vs new defaults (leaf 24, chunkdepth 4), 8M (s/step)
+headr2_n8000000_N1_c46_p2x23_r1.log            2.930
+leaf24r1_n8000000_N1_c46_p2x23_r1.log          2.424
+headr1_n8000000_N2_c92_p4x23_r1.log            2.035
+headr2_n8000000_N2_c92_p4x23_r1.log            1.981
+leaf24r1_n8000000_N2_c92_p4x23_r1.log          1.418
+hash24r1_n8000000_N2_c92_p4x23_r1.log          1.414
+headr1_n8000000_N4_c184_p8x23_r1.log           1.416
+headr2_n8000000_N4_c184_p8x23_r1.log           1.420
+leaf24r1_n8000000_N4_c184_p8x23_r1.log         1.034
+leaf24r2_n8000000_N4_c184_p8x23_r1.log         0.996
+hash24r1_n8000000_N4_c184_p8x23_r1.log         0.993
+hash24r2_n8000000_N4_c184_p8x23_r1.log         1.021
+headr1_n2000000_N4_c184_p8x23_r1.log           0.676
+headr2_n2000000_N4_c184_p8x23_r1.log           0.666
+leaf24r1_n2000000_N4_c184_p8x23_r1.log         0.455
+hash24r1_n2000000_N4_c184_p8x23_r1.log         0.455
+
+== 9. Results do not depend on layout, balance mode or owner choice (leaf 24)
+run                                                          steps        dK        dP spikes     drift
+leaf24r1_n8000000_N1_c46_p2x23_r1.log                           10  0.00e+00  0.00e+00      0  1.19e-06
+leaf24r1_n8000000_N2_c92_p4x23_r1.log                           10  0.00e+00  0.00e+00      0  1.19e-06
+leaf24r1_n8000000_N4_c184_p8x23_r1.log                          10  0.00e+00  0.00e+00      0  1.19e-06
+hash24r1_n8000000_N4_c184_p8x23_r1.log                          10  0.00e+00  0.00e+00      0  1.19e-06
+hashcost24r1_n8000000_N4_c184_p8x23_r1.log                      10  0.00e+00  0.00e+00      0  1.19e-06
+cost24r1_n8000000_N4_c184_p8x23_r1.log                          10  0.00e+00  0.00e+00      0  1.19e-06
+
+== 10. After: where the traversal goes, new defaults, 8M, 4 nodes
+== hashdiag24_n8000000_N4_c184_p8x23_r1.log: 184 PEs
+   max/mean  particles  1.11  interactions  1.25  trav  1.44  compute  1.39  wait  2.28
+   mean s    trav 6.128  compute 4.644  serve 0.494  wait 0.990  (slowest PE 47: trav 8.828 compute 6.471 serve 0.771 wait 1.586)
+   corr(trav, compute) +0.484  corr(trav, wait) +0.731  corr(compute, interactions) +0.898
+   cost model: 8.33 ns/pn + 11.71 ns/pp; residual rms 5.8% of mean compute
+   fetches per PE: node 14139 (max 17187), particle 15135 (max 18776); served max/mean node  1.99 particle  1.22
+   by PE octile, mean compute (s): 4.477 5.011 4.770 4.998 4.828 3.975 4.555 4.537
+   by PE octile, interactions/particle: 1096 1233 1108 1239 1172 1008 1148 1189

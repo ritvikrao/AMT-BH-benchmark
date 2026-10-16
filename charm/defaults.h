@@ -22,9 +22,18 @@
 // TreePieces in play for the decomposition to spread them, and costs nothing:
 // step time is flat from ppc 50 to 800 at both 10k and 100k particles.
 #define DEFAULT_PPC 100
-#define DEFAULT_PPB 10
+// Max particles per leaf (bucket), -b. 24 rather than 10: bigger buckets mean
+// fewer remote fetches -- a bucket's particles and the tree above it -- at
+// equal or better accuracy. Against direct summation (200k bodies, theta 0.5)
+// the median force error goes 5.1e-3 at 10 to 4.8e-3 at 24, since more of each
+// bucket's interactions are exact. 8M bodies, 4 Stampede3 nodes: 1.31 -> 1.01
+// s/step; 200k on 8 PEs: 0.365 -> 0.322. MULTINODE.md, "Traversal".
+#define DEFAULT_PPB 24
 #define DEFAULT_KILLAT 10
-#define DEFAULT_CHUNK_DEPTH 3
+// Levels of the tree a remote fetch returns. 4 rather than 3: 8M bodies on 4
+// Stampede3 nodes, 1.41 -> 1.27 s/step (node fetches per PE 29k -> 22k);
+// 2 is 1.71 and 5 is 1.34. MULTINODE.md, "Traversal".
+#define DEFAULT_CHUNK_DEPTH 4
 #define DEFAULT_YIELD_PERIOD 5
 #define DEFAULT_TREE_PIECES_PER_PROC 8
 

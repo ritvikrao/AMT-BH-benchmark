@@ -34,6 +34,7 @@ void grav(Particle *pstart, Particle *pend, Real mass, const Vector3D<Real> &pos
     p->potential -= phii;
     mor3 = phii/drsq;
     p->acceleration += mor3*dr;
+    p->cost += 1.0;
   }
 }
 
