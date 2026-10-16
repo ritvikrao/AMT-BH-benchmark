@@ -20,6 +20,12 @@ demand through a per-PE software cache in `DataManager`.
 Because the key ranges are recomputed from scratch every step, the particle
 distribution is rebalanced at every iteration rather than drifting over time.
 
+Across processes and nodes, nothing is replicated. Particles move straight to
+the PE that owns their TreePiece. Each PE builds the tree only above its own
+particles, and learns the rest of it from other PEs on demand: moments while the
+tree is built, subtrees and buckets while it is traversed. See
+[Running across nodes](#running-across-nodes).
+
 ## Building
 
 ```shell
@@ -102,8 +108,8 @@ the common knobs have environment variables:
 PES=8 STEPS=100 ./run.sh           # wider and longer
 ```
 
-`PES`, `PROCS`, `STEPS`, `NBODY`, `PPC`, `LEAF`, `THETA`, `DT`, `EPS`, `G`,
-`TIMERS`, `OUTPUT`, `OUTPUT_FREQ` and `LAUNCHER` are all read; anything left
+`PES`, `PROCS`, `NODES`, `STEPS`, `NBODY`, `PPC`, `LEAF`, `THETA`, `DT`, `EPS`,
+`G`, `TIMERS`, `OUTPUT`, `OUTPUT_FREQ` and `LAUNCHER` are all read; anything left
 unset keeps the program's own default. `PROCS` x `PES` is the total PE count:
 under Reconverse the process count comes from the launcher and `+ppn` is the
 PE count within each. `run.sh` uses `srun` inside a Slurm allocation and LCI's
@@ -133,17 +139,20 @@ Options take the form `-<name>=<value>`:
 | `format` | `csv` or `binary` | inferred from the extension |
 | `p` | TreePiece budget | `2 * numParticles / ppc + 16`, at least one per PE |
 | `ppc` | target particles per TreePiece | 100 (too fine at scale -- see [Running at scale](#granularity)) |
-| `b` | **max particles per leaf (bucket)** | 10 |
+| `b` | **max particles per leaf (bucket)** | 24 (was 10 before 2026-10-16; see MULTINODE.md "Traversal") |
 | `theta` | opening angle | 0.5 |
 | `G` | gravitational constant, in the dataset's units | 1.0 (**not** what the data generator writes -- see [Units](#units)) |
 | `eps` | Plummer softening length | 0.05 |
 | `dtime` | timestep | 0.025 |
 | `killat` | number of steps to run | 10 |
-| `chunkdepth` | subtree depth to fetch per remote request | 3 |
+| `chunkdepth` | subtree depth to fetch per remote request | 4 |
 | `yield` | buckets processed before yielding the PE | 5 |
+| `balance` | decomposition weight: `count` (particles) or `cost` (last step's interactions per particle) | `count` |
 | `timers` | phases to time: `all`, `none`, or a comma-separated list | `all` |
 | `output` | path prefix for ParaView snapshots; open `<prefix>.pvd` | none (no output) |
 | `outputfreq` | write a snapshot every Nth step | 1 |
+| `dumpstep` | write every particle's force and potential at this step (see [Correctness](#correctness)) | -1 (never) |
+| `dumpprefix` | path prefix for those dumps: `<prefix>_step<k>_pe<n>.bin` | `forces` |
 
 `p` is a ceiling, and the decomposition spends all of it. The splitters cut the
 Morton key space at midpoints rather than at medians, so how many leaves the
@@ -172,7 +181,8 @@ The defaults above suit a laptop-sized run. On a cluster three things have to
 be set explicitly and only one of them is a program option: the process
 layout, the fabric environment, and the physical units. What follows is what a
 full-node run on NCSA Delta needs; the reasoning carries to other
-Slingshot/libfabric machines.
+Slingshot/libfabric machines. TACC Stampede3, which is Omni-Path, needs
+different fabric settings: see [Running across nodes](#running-across-nodes).
 
 ### Process layout
 
@@ -294,7 +304,9 @@ over-decomposition to absorb imbalance -- see [Balance](#balance).
 ### What to expect
 
 2M bodies, one Delta CPU node, 10 steps, medians of three runs, with the
-settings above:
+settings above. Measured 2026-09-10, with the defaults of the time (leaf size
+10, `chunkdepth` 3) and before the multi-node changes to the tree build, so
+treat it as the shape of single-node scaling rather than as current figures:
 
 | cores | layout | s/step | speedup | traversal | tree build |
 |---|---|---|---|---|---|
@@ -307,8 +319,10 @@ settings above:
 | 120 | 8 x 15 | 0.447 | 38.5 | 0.239 | 0.148 |
 
 Traversal is what scales -- 68x from 1 to 120 cores, and nearly flat under weak
-scaling at 50k bodies per core. Tree build is what eventually bends the curve,
-which is why 120 cores comes out marginally slower than 105.
+scaling at 50k bodies per core. Tree build was what eventually bent the curve,
+which is why 120 cores came out marginally slower than 105. Every PE then built
+the top of the global tree; it now builds only the part above its own particles
+(see below).
 
 ### When a run fails
 
@@ -331,6 +345,119 @@ done
 pkill -9 -f barnes
 ```
 
+Do not stop `srun` with `timeout -s KILL`. A SIGKILLed `srun` cannot
+deregister its job step, which then holds every node, and each later `srun` in
+the job waits on it forever. Use `timeout -s TERM -k 30`, as `scripts/common.sh`
+does.
+
+## Running across nodes
+
+The layout above carries over unchanged: one process per NUMA domain on every
+node, with the process count from the launcher. Inside a Slurm allocation
+`run.sh` spreads `PROCS` over `NODES`:
+
+```shell
+export FI_CXI_RX_MATCH_MODE=hybrid
+NODES=4 PROCS=32 PES=15 ./run.sh data.csv -ppc=2000 \
+    -G=4.498626405128888e-15 -dtime=5000 -eps=0.1 \
+    +pemap 0-14,16-30,32-46,48-62,64-78,80-94,96-110,112-126 +lci_ndevices 2
+```
+
+That is 4 Delta nodes x 8 processes x 15 PEs, 480 PEs. `+pemap` is per node,
+so the single-node map is the right one.
+
+For measurements, [`scripts/`](scripts/) holds a harness that sets all of this
+per machine:
+- [`scripts/machines/`](scripts/machines/) has one file per machine with its
+  core layout, fabric environment, data paths and queues. Delta and Stampede3
+  (skx) are tested; the Frontier file is a template.
+- `scripts/submit.sh NODES MINUTES CAMPAIGN` submits a campaign to whichever
+  queue and account will start it soonest.
+- `scripts/job.sh CAMPAIGN` runs one inside an allocation you already hold.
+- The campaigns are in [`scripts/campaigns/`](scripts/campaigns/): `smoke`,
+  `correctness` (the layout matrix below), `baseline` (strong scaling) and `ab`
+  (two binaries, back to back).
+- `scripts/gendata.sh N` regenerates the project's datasets bit-identically
+  from the [data generator](https://github.com/vancraar/DataGenerator).
+
+[MULTINODE.md](MULTINODE.md) has the order to do this in on a new machine.
+
+### Stampede3
+
+Stampede3 is Omni-Path, not Slingshot, and differs in four ways. Its machine
+file handles all of them.
+- **Fabric.** LCI works there only over libfabric's `verbs;ofi_rxm`. Its
+  default backend (ibv) aborts at startup, `ofi/psm2` hangs, and `ofi/opx`
+  finds no provider:
+
+  ```shell
+  export LCI_ATTR_BACKEND=ofi LCI_ATTR_OFI_PROVIDER_NAME="verbs;ofi_rxm" \
+         FI_PROVIDER=verbs,ofi_rxm
+  srun --mpi=pmi2 ...   # LCI bootstraps through PMI
+  ```
+
+  Set `FI_PROVIDER` even if it looks set already: TACC's `impi` module exports
+  `FI_PROVIDER=opx`.
+- **Core numbering.** Stampede3 numbers cores interleaved across sockets (on
+  skx, socket 0 holds the even CPUs). A `+pemap` written as ranges therefore
+  splits every process across both sockets. Inside a job, the machine file
+  reads the real lists from `numactl -H`.
+- **Devices.** Use at most 2 LCI devices (`+lci_ndevices 2`). Reconverse
+  holds the remote keys of only 2 devices, and 3 or more aborted at startup
+  on Vista (2026-09). It has not been re-tested on Stampede3.
+- **Interactive work.** Use `idev`; TACC's submit filter refuses `salloc`.
+
+### Checking a multi-node run
+
+A multi-node run must give the same answers as one PE, to roundoff:
+- energies identical to every printed digit at every step;
+- per-particle forces within about 1e-13 relative (`-dumpstep` and
+  `scripts/compare_forces.py`, see [Correctness](#correctness)).
+
+`scripts/campaigns/correctness.sh` runs that matrix. It has passed on Delta up
+to 4 nodes x 8 x 15 (480 PEs), with forces within 7e-14 of one PE, and on
+Stampede3 up to 4 nodes x 2 x 23 (184 PEs), within 7.3e-14.
+
+### What to expect across nodes
+
+8M bodies, Stampede3 skx nodes (2 processes x 23 PEs each), 10 steps, current
+defaults. Medians of 1, 2 and 4 runs; phases are the slowest PE's, per step.
+
+| nodes | s/step | traversal | decomposition | tree build |
+|---|---|---|---|---|
+| 1 | 2.424 | 2.065 | 0.324 | 0.062 |
+| 2 | 1.416 | 1.228 | 0.169 | 0.036 |
+| 4 | 1.009 | 0.894 | 0.105 | 0.021 |
+
+The step scales 2.4x from 1 to 4 nodes, and the traversal is 85-90% of it.
+These figures come from an older Reconverse than `build.sh` pins, on nodes
+with 46 PEs rather than Delta's 120, so they are not directly comparable to
+the Delta tables above. Delta has not been re-measured since these changes.
+
+Three changes made it scale; each is measured in [MULTINODE.md](MULTINODE.md):
+1. **Particle exchange.** Each PE sends particles straight to the PEs that will
+   own them, and a receiver is done when it holds the exact count the
+   decomposition promised. There are no per-TreePiece messages or barriers.
+   Decomposition at 8M on 4 Delta nodes went from 0.606 to 0.057 s.
+2. **Tree build.** A PE refines a node shared by several TreePieces only where
+   it holds some of that node's particles. Every PE used to build the whole top
+   of the global tree and request moments for all of it, which is P x T requests
+   a step. Tree build at 8M on 4 nodes went from 2.81 to 0.025 s.
+3. **Fewer, larger remote fetches.** `chunkdepth` 4 and leaf size 24. Serving a
+   request costs about 18 us almost whatever its size, so the number of
+   messages is what matters. 1.4x faster on 2 and 4 nodes, and slightly more
+   accurate (see [Correctness](#correctness)).
+
+The traversal is still imbalanced: at 4 nodes the slowest PE takes 1.44x the
+mean. `-DPE_DIAG` breaks each PE's traversal into compute, serving and waiting
+(`scripts/pediag.py`).
+
+**Known problem.** On `~/charm_reconverse` (Reconverse `aa1bd88`), 8M bodies
+on *one* Stampede3 node misbehaved in 5 of 11 runs: 3 hangs at or just before
+exit, 1 slow exit, and 1 head node that stopped responding. That configuration
+alone logs Reconverse's `Allocating out of pool`, so check it with a current
+Reconverse before relying on it.
+
 ## Balance
 
 Every run prints how the decomposition came out, once, after the first step's
@@ -340,12 +467,24 @@ particle exchange:
 [BALANCE] step 0: 100000 particles over 4 PEs in 2016 of 2016 TreePieces; per PE min 24768 max 25186 mean 25000, max/mean 1.007; per TreePiece min 3 max 108 mean 49.6, max/mean 2.177
 ```
 
-Two numbers, because they answer different questions. The per-PE figure is the
-imbalance the step time actually pays for. The per-TreePiece figure is how
+Two numbers, because they answer different questions. The per-PE figure is how
+evenly the *particles* came out over the PEs. The per-TreePiece figure is how
 evenly the bodies themselves came out, which is what the specification's
 "as evenly as possible" asks about; it is always much the worse of the two,
 because a PE holds many TreePieces and their errors cancel. Both cost one
 reduction at the start of the run and nothing thereafter.
+
+Neither is the imbalance the step pays for, which is in *work*. A particle's
+interaction count varies smoothly with where it sits along the space-filling
+curve. So equal particles per PE are not equal work, and no number of
+TreePieces averages that away: on 8M bodies over 4 Stampede3 nodes, particles
+per PE were 1.11 max/mean, interactions 1.28, at `-ppc` 1000, 2000 and 4000
+alike. `-balance=cost` cuts the decomposition by each particle's interactions in
+the previous step instead, which brings interactions per PE to 1.10. It is
+opt-in because it was not faster there: the PEs left holding many cheap
+particles then serve more of the tree to everyone else. Results are identical
+either way, because the tree does not depend on where TreePiece boundaries
+fall. See MULTINODE.md, "Traversal".
 
 The gap between them is the point, not a defect. A leaf here is an equal slice
 of *space* -- splitting a bin halves its key range, not its contents -- so on a
@@ -354,8 +493,8 @@ per-TreePiece figure stays around 2 however far the refinement goes. The per-PE
 figure does not, because over-decomposition averages it away: 2016 TreePieces
 over 4 PEs is 504 apiece, and 2.177 per TreePiece becomes 1.007 per PE.
 
-That is a deliberate choice, and it was measured rather than assumed. A
-decomposition that cuts at particle-count quantiles instead was implemented and
+Equal particle counts per TreePiece are a deliberate non-goal, measured rather
+than assumed. A decomposition that cuts at particle-count quantiles instead was implemented and
 then withdrawn; on the same 100k input it moved the per-TreePiece figure from
 2.177 to 1.210 and the per-PE figure from 1.007 to 1.000, and cost 5-9% of the
 step, because finer bins put the TreePiece boundaries deeper down the Morton
@@ -393,9 +532,10 @@ id,mass,pos_x,pos_y,pos_z,vel_x,vel_y,vel_z
 Columns are located by name from the header rather than assumed positional, so
 extra columns and a different column order are both fine, as is the `posx` /
 `velx` spelling the specification document uses. A file with no header is read
-in the column order above, and says so on startup. `id` is read past and
-discarded: `Particle` has nowhere to put it, and the ordering that matters here
-is the Morton key.
+in the column order above, and says so on startup. The `id` column is not
+read. A particle's id is its 0-based record index in the file instead, which is
+the same in every layout and every step, so `-dumpstep` output from two runs can
+be matched particle by particle.
 
 **Binary** is what `./plummer` and `./gen` write by default: two `int`s
 (`nbody`, `ndims`), one `Real` (`tnow`), then eight `Real`s per body — `x y z
@@ -555,7 +695,8 @@ output on does not change results.
 
 ## Correctness
 
-Each step reports the energies the whitepaper's Section 6 requires:
+Each step reports the energies the whitepaper's Section 6 requires (here
+for the 10k input on one PE at leaf size 10):
 
 ```
 [ENERGY] step 0 E_K 0.08475496116 E_P -0.1213429476 E_T -0.03658798643
@@ -577,13 +718,15 @@ Run on one PE, `theta` and `b` as shown, everything else default:
 
 `E_K` matches the direct sum to all printed digits in every configuration, as
 it must -- both sides sum the same velocities. The `E_P` gap shrinks as `theta`
-decreases and does not depend on leaf size, which is the expected behaviour of
-the multipole approximation rather than a bug. A constant offset that does
-*not* close with `theta` is the signature of a real error; that is how the
-self-interaction term described above was found.
+decreases, and somewhat as the leaf size grows, since more of each bucket's
+interactions are then computed exactly. That is the expected behaviour of the
+multipole approximation rather than a bug. A constant offset that does *not*
+close with `theta` is the signature of a real error; that is how the
+self-interaction term described under [The mass invariant](#the-mass-invariant)
+was found.
 
-Forces are bit-identical across PE counts. On the 10k input, 1 / 2 / 4 / 8 PEs
-give the same `E_P` to every printed digit at every `theta` tried, and the same
+Results do not depend on the PE count. On the 10k input, 1 / 2 / 4 / 8 PEs give
+the same `E_P` to every printed digit at every `theta` tried, and the same
 node-interaction and particle-interaction counts.
 
 Layouts agree to roundoff at every step, not just the first, which is what
@@ -611,7 +754,13 @@ scripts/compare_forces.py a_step9 b_step9   # matched by particle id
 `tools/direct_sum.cpp` computes exact forces for the positions in a dump, so
 `compare_forces.py direct.bin a_step9` measures the tree approximation itself.
 At 100k bodies, `theta=0.5`, leaf 10, step 3: median |da|/|a| 5.5e-3, 99th
-percentile 3.9e-2, `E_P` off by 2.8e-4.
+percentile 3.9e-2, `E_P` off by 2.8e-4. By leaf size, at 200k bodies,
+`theta=0.5`, step 0:
+
+| leaf size (`-b`) | 8 | 10 | 16 | **24** (default) | 32 |
+|---|---|---|---|---|---|
+| median \|da\|/\|a\| | 5.26e-3 | 5.11e-3 | 4.91e-3 | 4.77e-3 | 4.68e-3 |
+| 99th percentile | 3.07e-2 | 2.95e-2 | 2.75e-2 | 2.62e-2 | 2.57e-2 |
 
 ### Integration
 
@@ -655,10 +804,14 @@ comparing numbers, those to tolerate, and those already settled.
 
 ## Status
 
-Working: distributed tree build and traversal, SFC decomposition rebalanced
-every step, configurable leaf size, energy tracking.
+Working: distributed tree build and traversal across nodes (verified to 480
+PEs on Delta and 184 on Stampede3), SFC decomposition rebalanced every step and
+weighted by particle count or by measured cost (`-balance`), configurable leaf
+size, energy tracking. The multi-node work and what is still open are in
+[MULTINODE.md](MULTINODE.md).
 
-Not yet implemented: load-balancing controls.
+Not yet implemented: repartitioning less often than every step, and
+measurement-based load balancing (the `loadbalancing` timer phase reads zero).
 
 *Potential energy jumped for one step at a time.* Fixed. Up to 4e-3 relative,
 reproducible for a configuration, varying with PE count. TreePiece key ranges

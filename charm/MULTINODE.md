@@ -30,7 +30,9 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
   LCI `ca88ce2c`, whose PMI bootstrap needs P²·D key-value entries, which
   at 64 processes overruns Cray PMI2 even with `PMI_MAX_KVS_ENTRIES=1000`.
   `dfb924cf` is that pin plus the two bootstrap fixes (`06748025`,
-  `dfb924cf`).
+  `dfb924cf`). Delta runs used this. The Stampede3 runs (3b, Traversal) used
+  a prebuilt `~/charm_reconverse` instead (`reconverse-specific-build`
+  6841dfe62, Reconverse `aa1bd88`): the pin has not been built there yet.
 
 ## Status
 
@@ -59,15 +61,21 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
       ([results](results/step3b-2026-10-16.txt)): tree build at 8M on 4 nodes
       2.814 -> 0.025 s, step 3.910 -> 1.383 s (2.83x). Not yet re-measured on Delta.
 - [x] **3c** Cheap fixes (3a45c97), plus the Makefile now rebuilds on an APP_FLAGS change.
+- [x] **3d** Traversal (8df37b8, 39c5d41): measured per PE (`-DPE_DIAG`) and retuned. `chunkdepth` 3 -> 4 and
+      leaf size 10 -> 24 make 8M 1.21x/1.42x/1.40x faster on 1/2/4 Stampede3 nodes,
+      with slightly better accuracy; `-balance=cost` is added, opt-in
+      ([results](results/traversal-2026-10-16.txt), section "Traversal"). Imbalance
+      (1.44 max/mean at 4 nodes) remains open.
 - [ ] **4** Scaling on Delta 1/2/4/8 nodes: strong 8M and 32M; weak 50k/core.
-- [ ] **5** README multi-node section, results, PR upstream.
+- [ ] **5** README multi-node section (done: "Running across nodes"), results, PR upstream.
 
 ## What has been verified, where
 
 | date | machine | what | commit | job |
 |---|---|---|---|---|
 | 2026-09-10 | Delta, 1 node | 1-120 cores, both layouts, 138 runs ([report](results/REPORT-1node-2026-09-10.txt)) | 2cdf1d5 | 21945686 |
-| 2026-10-16 | Stampede3 skx, 1/2/4 nodes | **3b** (moments skeleton): old and new binaries on 1x8, 1x2x23, 2x2x23, 4x2x23 and 4x4x11 (184 PEs). Energy series identical to all printed digits; same layout old vs new, forces max 3.8e-14; new 1x8 vs 4 nodes 7.3e-14 | 3b commit (binary built from it) | 3605652 (idev) |
+| 2026-10-16 | Stampede3 skx, 1/2/4 nodes | **Traversal** (`chunkdepth` 4, leaf 24): 8M energy series identical to all printed digits on 1x2x23, 2x2x23 and 4x2x23, with `-balance` count and cost; with `-b=10 -chunkdepth=3` the binary reproduces 1ff2080 exactly; leaf 24 force error vs direct sum 4.77e-3 median (leaf 10: 5.11e-3) | 39c5d41 | 3605876, 3605917 (idev) |
+| 2026-10-16 | Stampede3 skx, 1/2/4 nodes | **3b** (moments skeleton): old and new binaries on 1x8, 1x2x23, 2x2x23, 4x2x23 and 4x4x11 (184 PEs). Energy series identical to all printed digits; same layout old vs new, forces max 3.8e-14; new 1x8 vs 4 nodes 7.3e-14 | 1ff2080 | 3605652 (idev) |
 | 2026-10-15 | Delta, 4 nodes | **3a** (DM-to-DM exchange): 1x8 vs 4x8x15 energy identical to all digits, forces 7e-14 | bbce8b0 | 22918357 |
 | 2026-10-14 | Delta, 1/2/4 nodes | **correctness matrix**: 1x8, 1x8x15, 2x2x15, 2x8x15, 4x8x15 (480 PEs). Energy series identical to all printed digits; forces at step 9 agree per particle to 7e-14; 0 spikes; E_T drift 3.2e-6 over 10 steps | 89d55a5 | 22904192 |
 | 2026-10-14 | Delta, 2 nodes (cn044, cn130) | **first 2-node run**: 2M, 2x8x15 = 240 PEs, graceful, 0.383 s/step (1 node: 0.399). E_P deviates 6.6e-3 from 1 node, 6 spikes in 10 steps: the Step 1 bug, not yet fixed | 8d1b285 binary | 22903631 |
@@ -82,7 +90,8 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
    On Stampede3, run in an interactive allocation (`idev -p skx-dev -N 4`, held in
    `tmux`) and start campaigns there with `bash scripts/job.sh <campaign>`.
    `salloc` is refused by TACC's submit filter.
-3. Build: `cd charm && ./build.sh` (fetches and builds the pinned Charm++).
+3. Build: `cd charm && ./build.sh` (fetches and builds the pinned Charm++), or
+   `CHARM_PATH=<built target> ./build.sh` to use one you have.
 4. Data: clone https://github.com/vancraar/DataGenerator, then
    `scripts/gendata.sh 2000000` (and larger sizes as needed).
 5. `scripts/submit.sh 1 20 smoke`. It must run to `[Main] graceful exit`;
@@ -98,7 +107,7 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
 | 22904250 | `baseline`, 4 nodes: 2M and 8M at 1/2/4 nodes, before 3a | barnes-3e9fe70 | **done** 2026-10-14, see "Baseline" below |
 | 22904453 | `gendata 48000000`, 1 node | -- | **done**: n48000000.csv, 7.5 GB, 15 min |
 | 22918357 | `baseline` BASELINE_TAG=b3a, 4 nodes: 3a's 4-node correctness against 1x8, and its timings | barnes-bbce8b0 | **done** 2026-10-15: correct; see "After 3a" |
-| 22904246 | `baseline`, 8 nodes: 8-node correctness and timings, before 3a (reuses the 1-4 node logs) | barnes-3e9fe70 | queued, cpu, mzu, est. 2026-10-16 10:47 |
+| 22904246 | `baseline`, 8 nodes: 8-node correctness and timings, before 3a (reuses the 1-4 node logs) | barnes-3e9fe70 | queued as of 2026-10-14 (est. start 2026-10-16 10:47); not checked since. Its binary predates 3a and 3b, so only its 8-node correctness result still matters |
 
 The first attempt at 3a's correctness check never ran: its WAIT=1 feeder
 crashed when submit.sh was edited under it. submit.sh now runs from a
@@ -236,8 +245,9 @@ children only if it opens it.
 tree is built on. So a node with several owners contains each owner's whole
 cell, and any owner with particles has all of them inside the node. That
 owner's PE therefore refines the node and every ancestor of it, and can answer
-for it. Requests (moments, and the traversal's `requestNode`) now go to a random
-owner *with particles* (`servingOwner`, Descriptor.h), not a random owner. An
+for it. Requests (moments, and the traversal's `requestNode`) now go to an
+owner *with particles* (`servingOwner`, Descriptor.h), not any owner; which one
+is a hash of the node and the asking PE since "Traversal" item 4. An
 empty owner's PE may never have built the node, and the responder's
 "bad request" and "Leaf children request" aborts stay as the check. A
 single-owner Remote leaf whose owner has no particles holds no particles
@@ -274,8 +284,8 @@ run back to back with the new one in the same allocation (`campaigns/ab.sh`).
   than before. The nodes near the root are no longer in every PE's tree with
   their moments, so the remote traversal fetches them (`chunkdepth` levels per
   request) the first time a bucket opens them. Traversal also scales only
-  2.1x from 1 to 4 nodes at 8M, against 3.2x on Delta before 3b. That is the
-  next thing to look at (Step 4).
+  2.1x from 1 to 4 nodes at 8M, against 3.2x on Delta before 3b. See
+  "Traversal" below.
 - Stampede3 numbers are not comparable to Delta's in absolute terms: 46 PEs
   per node instead of 120, and an older Reconverse (`~/charm_reconverse`, not
   the `build.sh` pin).
@@ -284,10 +294,102 @@ run back to back with the new one in the same allocation (`campaigns/ab.sh`).
   used. The cause was not investigated. It came after the run had finished,
   and none of the 17 new-binary runs did it.
 
+## Traversal (2026-10-16, Stampede3 idev jobs 3605789, 3605876, 3605917)
+
+After 3b the traversal was 93% of the step and scaled 2.1x from 1 to 4 nodes
+at 8M. [Results](results/traversal-2026-10-16.txt).
+
+**Where it goes.** Built with `-DPE_DIAG`, every PE reports its traversal
+phase split into compute (local and remote traversal, applying fetched data),
+serving other PEs' requests, and the rest of the phase, which is waiting. It
+also reports interactions and fetches; `scripts/pediag.py` tabulates them.
+8M bodies, committed defaults:
+
+| | 1 node | 2 nodes | 4 nodes |
+|---|---|---|---|
+| traversal max/mean over PEs | 1.23 | 1.44 | 1.53 |
+| compute, summed over PEs (PE-s) | 853 | 909 | 1005 |
+| waiting, summed (PE-s) | 94 | 203 | 400 |
+| serving, summed (PE-s) | 28 | 84 | 181 |
+| corr(traversal, waiting) | 0.52 | 0.81 | 0.87 |
+
+- **Compute follows interactions** (r = 0.98 on one node), and interactions
+  per PE are 1.17-1.28 max/mean while particles are 1.04-1.11. A particle's
+  interaction count varies smoothly along the space-filling curve, so equal
+  particle counts per PE are not equal work. Finer or coarser TreePieces
+  (`-ppc` 1000, 2000, 4000) leave this unchanged, at 1.27-1.28.
+- **Across nodes, waiting and serving grow fastest** and decide which PE is
+  slowest. Serving costs about 18 us per request, nodes and buckets together,
+  almost regardless of size: per node request served, it is 33 us at
+  chunkdepth 2 and 36 us at 4, though each level multiplies a full reply by 8.
+  So the cost is per message. Each PE
+  sends and answers about 4,400 requests a step at 4 nodes, half of them for
+  one bucket's particles.
+- **Not duplication.** The PEs of one process fetch the same key only 1.4x on
+  average for nodes and 1.1x for buckets (`[PEDUP]`), so a cache shared by the
+  process would remove at most 29% and 11% of fetches.
+
+**What changed:**
+
+1. **`chunkdepth` 3 -> 4.** 8M on 4 nodes: 1.41 -> 1.27 s/step (2: 1.71;
+   5: 1.34). Node fetches per PE drop 29k -> 22k.
+2. **Leaf size (`-b`) 10 -> 24.** Bigger buckets mean fewer particle fetches
+   and a shallower tree to fetch, *and* slightly better accuracy. Against
+   direct summation (200k bodies, step 0, theta 0.5) the median |da|/|a| is
+   5.11e-3 at 10, 4.77e-3 at 24 and 4.68e-3 at 32, because more of each bucket's
+   interactions are exact. Energy drift over 10 steps is ~1e-6 at every size.
+   32 is 4-7% faster than 24 at 2-4 nodes but slower on one node (200k on 8
+   PEs: 0.337 vs 0.322 s), so 24 is the default. DIFFERENCES.md item 9 is updated.
+3. **`-balance=cost`, opt-in.** It cuts the decomposition by each particle's
+   interactions in the last step instead of by count. That evens out the
+   interactions per PE (1.28 -> 1.10 max/mean) but is not faster: the PEs left
+   with many cheap particles then serve more of the tree, and the busiest
+   server becomes the slowest PE. At leaf 24 it ties with count. The tree does
+   not depend on where TreePiece boundaries fall (ownership only splits a
+   node that would hold no more than a bucket's worth, and TreePieces hold
+   ~2000), so results are identical in both modes.
+4. **Owners chosen by hash, not `rand()`.** `servingOwner` hashes (node, PE).
+   `rand()` starts from the same seed in every process, so its choices are
+   correlated. Measured no faster: the busiest server's load is single-owner
+   data that many PEs need.
+
+**Result**, 8M bodies, s/step:
+
+| nodes | committed (1ff2080) | new defaults | speedup |
+|---|---|---|---|
+| 1 | 2.930 | 2.424 | 1.21x |
+| 2 | 2.035, 1.981 | 1.418, 1.414 | 1.42x |
+| 4 | 1.416, 1.420 | 1.034, 0.996, 0.993, 1.021 | 1.40x |
+| 4 (2M) | 0.676, 0.666 | 0.455, 0.455 | 1.47x |
+
+From 1 to 4 nodes at 8M the step now scales 2.4x (it was 2.1x). Energies are
+identical to every printed digit at 1, 2 and 4 nodes, in both balance modes.
+With `-b=10 -chunkdepth=3` the binary reproduces 1ff2080's energies and
+interaction counts exactly.
+
+**Still open.** Traversal max/mean is 1.44 at 4 nodes. The slowest PE
+computes 1.4x the mean, and the busiest PE serves twice the mean. Candidates:
+- weight the decomposition by measured busy time, serving included, rather
+  than by interactions alone;
+- aggregate requests to the same PE into one message, since the cost is per
+  message.
+
+8M on *one* node misbehaved in 5 of 11 runs on `~/charm_reconverse`.
+- Three hung after their last step until the run timeout, at exit or just
+  before it.
+- One took 2 minutes to exit.
+- During one, the idev head node became unreachable, and its job had to be
+  cancelled.
+
+Of 53 logs, only this configuration prints `Allocating out of pool`: 359-414
+times a run, from the LCI backend's per-message allocation and registration of
+messages over its pool size. Check it with a current Reconverse before trusting
+single-node 8M numbers.
+
 ## Step 3: costs that grow with P x T
 
-Measure these with the phase timers at 2 and 8 nodes before rewriting
-anything.
+The plan as written before Step 3. The line numbers refer to the code as it
+was then.
 
 - **Particle exchange.** Every DataManager sends a message, usually empty, to
   every TreePiece, and each TreePiece waits for `CkNumPes()` of them
@@ -297,17 +399,19 @@ anything.
     `CkArrayMap`. Each DataManager sends one message per non-empty
     destination PE, and receivers complete when they have the counted number of
     particles.
+  - **Done** (3a, bbce8b0; see "After 3a").
 - **Moments skeleton.** `buildTree` refines every multi-owner node on every
   PE (`DataManager.cpp:828`), so each PE sends about T `requestMoments`
   (`Worker.cpp:70`).
   - Fix: refine only where the PE holds particles, and route requests to the
     first owner with a non-zero count instead of `rand()`. The riskiest
     change: do it after the exchange fix, with the force dump as the check.
-  - **Done** (see "After 3b"). Requests go to a *random* owner with a
-    non-zero count rather than the first, so that the nodes near the root,
-    which nearly every PE asks for, do not all land on one PE.
+  - **Done** (see "After 3b"). Requests are spread over the owners with a
+    non-zero count rather than sent to the first, so that the nodes near the
+    root, which nearly every PE asks for, do not all land on one PE.
 - **Cheap fixes.** The `TreeChecker` string built per fetched subtree
   (`DataManager.cpp:1188-1191`), the no-op `InteractionChecker` walk, and
   `traversalMass[1024]` (`Worker.h:79-80`), which overflows past 1024 PEs.
+  **Done** (3c, 3a45c97).
 - **Later, for Frontier scale.** Histogram rounds re-reduce every leaf;
   `RangeMsg` is O(T).

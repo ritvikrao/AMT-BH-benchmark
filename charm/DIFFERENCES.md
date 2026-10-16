@@ -15,7 +15,8 @@ groups:
   have to be reported alongside results.
 - **Settled.** Was a difference, and has since been brought in line.
 
-Surveyed at upstream `2563694` (2026-10-14), from the source; file:line
+Surveyed at upstream `2563694` (2026-10-14), from the source, and still
+current on 2026-10-16: upstream `main` has not moved since. File:line
 references are given so each claim can be checked. The specification itself
 is not in the repository. Where the code cites it ("whitepaper Eq. N"), that
 citation is quoted.
@@ -198,7 +199,9 @@ does not yet run distributed.
 
 ### 9. Leaf size
 
-Leaf sizes are 1 (HPX), 8 (TTG, Itoyori), 16 (Julia) and 10 for us (`-b`).
+Leaf sizes are 1 (HPX), 8 (TTG, Itoyori), 16 (Julia) and 24 for us (`-b`;
+10 until 2026-10-16, when 24 measured both faster across nodes and slightly
+more accurate against direct summation -- MULTINODE.md, "Traversal").
 Leaf size is a tuning parameter, so each implementation should use its best
 value, as long as the value is reported and accuracy is held fixed (#1).
 
