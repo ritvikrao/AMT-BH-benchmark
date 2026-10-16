@@ -56,6 +56,7 @@ void TreePiece::startTraversal(){
 }
 
 void TreePiece::doLocalGravity(RescheduleMsg *msg){
+  PE_DIAG_TIME(busyLocal);
   int i;
   for(i = 0; i < globalParams.yieldPeriod && 
                  localTraversalState.current < myNumBuckets; 
@@ -76,6 +77,7 @@ void TreePiece::doLocalGravity(RescheduleMsg *msg){
 }
 
 void TreePiece::doRemoteGravity(RescheduleMsg *msg){
+  PE_DIAG_TIME(busyRemote);
   int i;
   for(i = 0; i < globalParams.yieldPeriod &&
                  remoteTraversalState.current < myNumBuckets;

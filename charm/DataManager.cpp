@@ -961,6 +961,7 @@ Node<ForceData> *DataManager::lookupNode(Key k){
 }
 
 void DataManager::requestMoments(Key k, int replyTo){
+  PE_DIAG_TIME(busyServe);
   pendingMoments[k].push_back(replyTo);
   TB_DEBUG("(%d) received requestMoments %lu from pe %d doneTreeBuild %d\n", 
           CkMyPe(), k, replyTo, doneTreeBuild);
@@ -1087,6 +1088,8 @@ bool CompareNodePtrToKey(void *a, Key k){
 }
 
 void DataManager::startTraversal(){
+  PE_DIAG_COUNT(particles, myNumParticles);
+  PE_DIAG_COUNT(buckets, myBuckets.length());
   Node<ForceData> **bucketPtrs = myBuckets.getVec();
   submittedParticles[0].bucketStartIdx = 0;
   int start = 0;
@@ -1127,6 +1130,10 @@ void DataManager::requestParticles(Node<ForceData> *leaf, CutoffWorker<ForceData
   Request &request = particleRequestTable[key];
   if(!request.sent){
     partReqs.incrRequests();
+    PE_DIAG_COUNT(partFetches, 1);
+#ifdef PE_DIAG
+    peDiagNoteFetch(false, key);
+#endif
 
     if(leaf->isCached()) request.parentCached = true;
     else request.parentCached = false;
@@ -1149,10 +1156,12 @@ void DataManager::requestParticles(Node<ForceData> *leaf, CutoffWorker<ForceData
 }
 
 void DataManager::requestParticles(RequestMsg *msg){
+  PE_DIAG_TIME(busyServe);
   if(!treeMomentsReady){
     bufferedParticleRequests.push_back(msg);
     return;
   }
+  PE_DIAG_COUNT(partServed, 1);
 
   RRDEBUG("(%d) REPLY particles key %lu to %d\n", 
           CkMyPe(), msg->key, msg->replyTo);
@@ -1184,6 +1193,10 @@ void DataManager::requestNode(Node<ForceData> *leaf, CutoffWorker<ForceData> *wo
   Request &request = nodeRequestTable[key];
   if(!request.sent){
     nodeReqs.incrRequests();
+    PE_DIAG_COUNT(nodeFetches, 1);
+#ifdef PE_DIAG
+    peDiagNoteFetch(true, key);
+#endif
 
     if(leaf->isCached()) request.parentCached = true;
     else request.parentCached = false;
@@ -1209,10 +1222,12 @@ void DataManager::requestNode(Node<ForceData> *leaf, CutoffWorker<ForceData> *wo
 }
 
 void DataManager::requestNode(RequestMsg *msg){
+  PE_DIAG_TIME(busyServe);
   if(!treeMomentsReady){
     bufferedNodeRequests.push_back(msg);
     return;
   }
+  PE_DIAG_COUNT(nodeServed, 1);
 
   RRDEBUG("(%d) REPLY node %lu to %d\n", 
           CkMyPe(), msg->key, msg->replyTo);
@@ -1249,6 +1264,7 @@ void DataManager::requestNode(RequestMsg *msg){
 }
 
 void DataManager::recvParticles(ParticleReplyMsg *msg){
+  PE_DIAG_TIME(busyRemote);
   map<Key,Request>::iterator it = particleRequestTable.find(msg->key);
   CkAssert(it != particleRequestTable.end());
 
@@ -1275,6 +1291,7 @@ void DataManager::recvParticles(ParticleReplyMsg *msg){
 }
 
 void DataManager::recvNode(NodeReplyMsg *msg){
+  PE_DIAG_TIME(busyRemote);
   map<Key,Request>::iterator it = nodeRequestTable.find(msg->key);
   CkAssert(it != nodeRequestTable.end());
 
@@ -1325,6 +1342,8 @@ void DataManager::traversalsDone()
 #ifdef STATISTICS
   numInteractions[0] += pnInter;
   numInteractions[1] += ppInter;
+  PE_DIAG_COUNT(pn, pnInter);
+  PE_DIAG_COUNT(pp, ppInter);
   numInteractions[2] += openCrit;
 #endif
   if(numTreePiecesDoneTraversals == numLocalTreePieces){
@@ -1421,6 +1440,9 @@ void DataManager::advance(CkReductionMsg *msg){
   }
 
   CkAssert(pendingMoments.empty());
+#ifdef PE_DIAG
+  if(CkMyRank() == 0) peDiagEndStep(iteration);
+#endif
   // safe to reset here, since all tree pieces 
   // must have finished iteration
   freeCachedData();
@@ -1452,6 +1474,9 @@ void DataManager::advance(CkReductionMsg *msg){
   iteration++;
   CkCallback cb;
   if(iteration == globalParams.iterations){
+#ifdef PE_DIAG
+    reportPeDiag();
+#endif
     // The final step's energies would otherwise never be reported: nothing
     // calls decompose() again after this. Reduce them to Main, which prints
     // them and then exits.
@@ -1477,6 +1502,59 @@ void DataManager::advance(CkReductionMsg *msg){
   }
   delete msg;
 }
+
+#ifdef PE_DIAG
+thread_local PeDiag peDiag;
+
+#include <mutex>
+#include <unordered_set>
+static std::mutex peDiagMutex;
+static std::unordered_set<CmiUInt8> peDiagNodeKeys, peDiagPartKeys;
+static CmiUInt8 peDiagFetches[2], peDiagTotals[4];  // node, particle; + uniques
+
+void peDiagNoteFetch(bool node, CmiUInt8 key){
+  std::lock_guard<std::mutex> g(peDiagMutex);
+  (node ? peDiagNodeKeys : peDiagPartKeys).insert(key);
+  peDiagFetches[node ? 0 : 1]++;
+}
+
+// Called by every PE once its traversal is over; the process's rank 0 closes
+// the step after a global reduction has passed, so no PE is still fetching.
+void peDiagEndStep(int step){
+  std::lock_guard<std::mutex> g(peDiagMutex);
+  peDiagTotals[0] += peDiagFetches[0];
+  peDiagTotals[1] += peDiagFetches[1];
+  peDiagTotals[2] += peDiagNodeKeys.size();
+  peDiagTotals[3] += peDiagPartKeys.size();
+  peDiagFetches[0] = peDiagFetches[1] = 0;
+  peDiagNodeKeys.clear();
+  peDiagPartKeys.clear();
+}
+
+// One line per PE; scripts/pediag.py tabulates them. trav is the traversal
+// phase as the phase timers measured it, so trav - local - remote - serve is
+// time inside the phase this PE spent neither computing nor serving: waiting.
+void DataManager::reportPeDiag(){
+  double trav = 0.0;
+  const double *v = timers.values();
+  if(v != NULL)
+    for(int s = 0; s < globalParams.iterations; s++)
+      trav += v[(size_t)s*NUM_PHASES + PHASE_TRAVERSAL];
+  CkPrintf("[PEDIAG] pe %d particles %llu buckets %llu trav %.6f local %.6f "
+           "remote %.6f serve %.6f pn %llu pp %llu nfetch %llu pfetch %llu "
+           "nserved %llu pserved %llu\n",
+           CkMyPe(), peDiag.particles, peDiag.buckets, trav, peDiag.busyLocal,
+           peDiag.busyRemote, peDiag.busyServe, peDiag.pn, peDiag.pp,
+           peDiag.nodeFetches, peDiag.partFetches, peDiag.nodeServed,
+           peDiag.partServed);
+  if(CkMyRank() == 0){
+    std::lock_guard<std::mutex> g(peDiagMutex);
+    CkPrintf("[PEDUP] process %d PEs %d node fetches %llu unique %llu, "
+             "particle fetches %llu unique %llu\n", CkMyNode(), CkMyNodeSize(),
+             peDiagTotals[0], peDiagTotals[2], peDiagTotals[1], peDiagTotals[3]);
+  }
+}
+#endif
 
 void DataManager::recvUnivBoundingBox(CkReductionMsg *msg){
   BoundingBox &univBB = *((BoundingBox *)msg->getData());

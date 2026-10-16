@@ -214,6 +214,9 @@ class DataManager : public CBase_DataManager {
   void finishIteration();
 
   void findMinVByA(DtReductionStruct &);
+#ifdef PE_DIAG
+  void reportPeDiag();
+#endif
 
   void markNaNBuckets();
 
