@@ -43,12 +43,21 @@ RUN_TIMEOUT=${RUN_TIMEOUT:-900}
 mkdir -p "$LOGS"
 
 # The usable cores of one node, NUMA domain by domain: PES_PER_DOMAIN of each
-# domain's CORES_PER_DOMAIN, starting PE_OFFSET_IN_DOMAIN in.
+# domain's CORES_PER_DOMAIN, starting PE_OFFSET_IN_DOMAIN in. Domain d's cores
+# are CORES_PER_DOMAIN x d onwards, unless the machine file read the real lists
+# into DOMAIN_CPUS (Stampede3 numbers its cores interleaved across sockets).
 core_list() {
-  local d c out=""
+  local d c out="" cpus
   for ((d = 0; d < NUMA_DOMAINS; d++)); do
+    if [ -n "${DOMAIN_CPUS+x}" ]; then
+      read -r -a cpus <<< "${DOMAIN_CPUS[$d]}"
+    fi
     for ((c = 0; c < PES_PER_DOMAIN; c++)); do
-      out="${out:+$out }$((CORES_PER_DOMAIN * d + PE_OFFSET_IN_DOMAIN + c))"
+      if [ -n "${DOMAIN_CPUS+x}" ]; then
+        out="${out:+$out }${cpus[$((PE_OFFSET_IN_DOMAIN + c))]}"
+      else
+        out="${out:+$out }$((CORES_PER_DOMAIN * d + PE_OFFSET_IN_DOMAIN + c))"
+      fi
     done
   done
   echo "$out"
@@ -108,8 +117,10 @@ run_one() {
     echo "## machine=$MACHINE job=${SLURM_JOB_ID:-none} pemap=$map dev=${dev:-none} date=$(date -Is)"
     echo "## bin=$BIN commit=$(git -C "$BH_CHARM" describe --always --dirty 2>/dev/null)"
     echo "## nodelist=${SLURM_JOB_NODELIST:-none}"
+    # TERM, not KILL: a SIGKILLed srun cannot deregister its step, which then
+    # holds every node, and each later srun in the job waits on it forever.
     /usr/bin/time -f "WALL %e s" \
-      timeout -s KILL "$RUN_TIMEOUT" srun -N "$nodes" -n "$procs" --ntasks-per-node="$ppnode" \
+      timeout -s TERM -k 30 "$RUN_TIMEOUT" srun -N "$nodes" -n "$procs" --ntasks-per-node="$ppnode" \
         $LAUNCH_FLAGS "$BIN" +ppn "$ppn" +pemap "$map" $dev \
         $PHYS $TUNE -in="$DATA/n${n}.csv" -killat="$steps" "$@"
   } > "$log" 2>&1
