@@ -379,6 +379,10 @@ per machine:
   (two binaries, back to back).
 - `scripts/gendata.sh N` regenerates the project's datasets bit-identically
   from the [data generator](https://github.com/vancraar/DataGenerator).
+- Every run is watched by `scripts/memguard.sh` on each node: it logs free
+  memory next to the run's log, and kills the run on a node whose
+  `MemAvailable` falls below `MEMGUARD_MB` (16 GB). A node that runs out of
+  memory takes the job down with it (`NODE_FAIL`).
 
 [MULTINODE.md](MULTINODE.md) has the order to do this in on a new machine.
 
@@ -397,7 +401,9 @@ file handles all of them.
   ```
 
   Set `FI_PROVIDER` even if it looks set already: TACC's `impi` module exports
-  `FI_PROVIDER=opx`.
+  `FI_PROVIDER=opx`. A single-process `./run.sh` needs these too, on a login
+  node as much as in a job: without them it aborts with `Specified inline size
+  64 is too large (maximum 0)`.
 - **Core numbering.** Stampede3 numbers cores interleaved across sockets (on
   skx, socket 0 holds the even CPUs). A `+pemap` written as ranges therefore
   splits every process across both sockets. Inside a job, the machine file
@@ -405,7 +411,11 @@ file handles all of them.
 - **Devices.** Use at most 2 LCI devices (`+lci_ndevices 2`). Reconverse
   holds the remote keys of only 2 devices, and 3 or more aborted at startup
   on Vista (2026-09). It has not been re-tested on Stampede3.
-- **Interactive work.** Use `idev`; TACC's submit filter refuses `salloc`.
+- **Queues.** `skx-dev` takes up to 16 nodes for 2 hours and usually starts at
+  once; the `skx` queue can take many hours. Use `idev` to work interactively
+  (TACC's submit filter refuses `salloc`), but submit anything that may wait
+  as a batch job: an `idev` allocation that starts with nobody attached idles
+  until its time limit.
 
 ### Checking a multi-node run
 
@@ -416,23 +426,30 @@ A multi-node run must give the same answers as one PE, to roundoff:
 
 `scripts/campaigns/correctness.sh` runs that matrix. It has passed on Delta up
 to 4 nodes x 8 x 15 (480 PEs), with forces within 7e-14 of one PE, and on
-Stampede3 up to 4 nodes x 2 x 23 (184 PEs), within 7.3e-14.
+Stampede3 up to 8 nodes x 2 x 23 (368 PEs) and 8 x 4 x 11, within 6.0e-14.
 
 ### What to expect across nodes
 
-8M bodies, Stampede3 skx nodes (2 processes x 23 PEs each), 10 steps, current
-defaults. Medians of 1, 2 and 4 runs; phases are the slowest PE's, per step.
+8M bodies, Stampede3 skx nodes (2 processes x 23 PEs each), the Charm++ that
+`build.sh` pins, current defaults, 10 steps. Medians of 2-4 runs; phases are
+the slowest PE's, per step
+([results](results/pinned-2026-10-17.txt)).
 
-| nodes | s/step | traversal | decomposition | tree build |
-|---|---|---|---|---|
-| 1 | 2.424 | 2.065 | 0.324 | 0.062 |
-| 2 | 1.416 | 1.228 | 0.169 | 0.036 |
-| 4 | 1.009 | 0.894 | 0.105 | 0.021 |
+| nodes | s/step | traversal | decomposition | tree build | speedup |
+|---|---|---|---|---|---|
+| 1 | 2.309 | 1.918 | 0.356 | 0.136 | 1.00x |
+| 2 | 1.310 | 1.126 | 0.166 | 0.041 | 1.76x |
+| 4 | 0.844 | 0.734 | 0.097 | 0.020 | 2.73x |
+| 8 | 0.523 | 0.440 | 0.076 | 0.017 | 4.41x |
 
-The step scales 2.4x from 1 to 4 nodes, and the traversal is 85-90% of it.
-These figures come from an older Reconverse than `build.sh` pins, on nodes
-with 46 PEs rather than Delta's 120, so they are not directly comparable to
-the Delta tables above. Delta has not been re-measured since these changes.
+2M bodies scale 0.581 -> 0.208 s/step on 1 -> 8 nodes (2.79x). The traversal
+is 83-87% of the step. These nodes have 46 PEs rather than Delta's 120, so
+the figures are not directly comparable to the Delta tables above, and Delta
+has not been re-measured since these changes.
+
+The runtime matters: the same code on the June Reconverse (`aa1bd88`) is
+1.06x, 1.12x and 1.26x slower at 8M on 1, 2 and 4 nodes, and 1.70x slower at
+2M on 4 nodes. Results are identical on both.
 
 Three changes made it scale; each is measured in [MULTINODE.md](MULTINODE.md):
 1. **Particle exchange.** Each PE sends particles straight to the PEs that will
@@ -445,18 +462,25 @@ Three changes made it scale; each is measured in [MULTINODE.md](MULTINODE.md):
    a step. Tree build at 8M on 4 nodes went from 2.81 to 0.025 s.
 3. **Fewer, larger remote fetches.** `chunkdepth` 4 and leaf size 24. Serving a
    request costs about 18 us almost whatever its size, so the number of
-   messages is what matters. 1.4x faster on 2 and 4 nodes, and slightly more
-   accurate (see [Correctness](#correctness)).
+   messages is what matters. On the June Reconverse this was 1.4x faster on
+   2 and 4 nodes; on the pinned one 1.1x and 1.2x, likely because its messages
+   cost less to begin with. Slightly more accurate as well (see
+   [Correctness](#correctness)).
 
 The traversal is still imbalanced: at 4 nodes the slowest PE takes 1.44x the
 mean. `-DPE_DIAG` breaks each PE's traversal into compute, serving and waiting
 (`scripts/pediag.py`).
 
-**Known problem.** On `~/charm_reconverse` (Reconverse `aa1bd88`), 8M bodies
-on *one* Stampede3 node misbehaved in 5 of 11 runs: 3 hangs at or just before
-exit, 1 slow exit, and 1 head node that stopped responding. That configuration
-alone logs Reconverse's `Allocating out of pool`, so check it with a current
-Reconverse before relying on it.
+**Known problem: 8M bodies on one Stampede3 node.** Do not run it. With the
+pinned Charm++ it aborted after 2-5 steps in 6 of 10 runs, with LCI
+failing to register memory with libfabric (`fi_mr_regattr`, in the ofi
+backend's `register_memory_impl`). On the June Reconverse it misbehaved in 5
+of 11 runs, mostly by hanging at exit.
+Twice a run of it left its node unresponsive; one of those jobs ended in
+`NODE_FAIL`. It is not memory exhaustion: no run on a node used more than
+about 10 GB of its 192 GB. 2M on one node, and 8M on two or more, are
+unaffected. The harness refuses that one configuration (`run_one`; set
+`ALLOW_8M_ONE_NODE=1` to override).
 
 ## Balance
 

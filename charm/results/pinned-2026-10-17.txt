@@ -1,0 +1,110 @@
+Pinned Charm++ on Stampede3 skx, 2026-10-16/17
+Charm++ charm4py-reconverse-fixes bc6d7a283, Reconverse 988a8b4, LCI dfb924cf, built by build.sh
+from an empty clone of 638c403. Old runtime: ~/charm_reconverse (Reconverse aa1bd88, 2026-06-25).
+2 processes x 23 PEs per node; 10 steps; medians; phases are the slowest PE's, per step.
+Binaries: barnes-pin1ff2080, barnes-pin39c5d41 (pinned), barnes-final (39c5d41's code on the old runtime).
+Jobs: 3606099 (skx-dev, 4 nodes, idev), 3608433 (skx-dev, 2 nodes, idev), 3609153 (skx-dev, 8 nodes, batch).
+
+== 1. Correctness (2M bodies, energy series vs each binary's own 1x8; forces at step 9)
+-- logs-pin4 pin1ff2080
+   run                                                          steps        dK        dP spikes     drift
+   pin1ff2080corr_n2000000_N1_c8_p1x8_r1.log    10  0.00e+00  0.00e+00      0  3.15e-06
+   pin1ff2080corr_n2000000_N1_c46_p2x23_r1.log    10  0.00e+00  0.00e+00      0  3.15e-06
+   pin1ff2080corr_n2000000_N1_c8_p1x8_r1.log    10  0.00e+00  0.00e+00      0  3.15e-06
+   pin1ff2080corr_n2000000_N2_c92_p4x23_r1.log    10  0.00e+00  0.00e+00      0  3.15e-06
+   pin1ff2080corr_n2000000_N4_c176_p16x11_r1.log    10  0.00e+00  0.00e+00      0  3.15e-06
+   pin1ff2080corr_n2000000_N4_c184_p8x23_r1.log    10  0.00e+00  0.00e+00      0  3.15e-06
+-- logs-pin4 pin39c5d41
+   run                                                          steps        dK        dP spikes     drift
+   pin39c5d41corr_n2000000_N1_c8_p1x8_r1.log    10  0.00e+00  0.00e+00      0  2.00e-06
+   pin39c5d41corr_n2000000_N1_c46_p2x23_r1.log    10  0.00e+00  0.00e+00      0  2.00e-06
+   pin39c5d41corr_n2000000_N1_c8_p1x8_r1.log    10  0.00e+00  0.00e+00      0  2.00e-06
+   pin39c5d41corr_n2000000_N2_c92_p4x23_r1.log    10  0.00e+00  0.00e+00      0  2.00e-06
+   pin39c5d41corr_n2000000_N4_c176_p16x11_r1.log    10  0.00e+00  0.00e+00      0  2.00e-06
+   pin39c5d41corr_n2000000_N4_c184_p8x23_r1.log    10  0.00e+00  0.00e+00      0  2.00e-06
+-- logs-pin4 final
+   run                                                          steps        dK        dP spikes     drift
+   finalcorr_n2000000_N1_c8_p1x8_r1.log    10  0.00e+00  0.00e+00      0  2.00e-06
+   finalcorr_n2000000_N1_c46_p2x23_r1.log    10  0.00e+00  0.00e+00      0  2.00e-06
+   finalcorr_n2000000_N1_c8_p1x8_r1.log    10  0.00e+00  0.00e+00      0  2.00e-06
+   finalcorr_n2000000_N2_c92_p4x23_r1.log    10  0.00e+00  0.00e+00      0  2.00e-06
+   finalcorr_n2000000_N4_c176_p16x11_r1.log    10  0.00e+00  0.00e+00      0  2.00e-06
+   finalcorr_n2000000_N4_c184_p8x23_r1.log    10  0.00e+00  0.00e+00      0  2.00e-06
+-- logs-pin8 pin39c5d41
+   run                                                          steps        dK        dP spikes     drift
+   pin39c5d41corr_n2000000_N1_c8_p1x8_r1.log    10  0.00e+00  0.00e+00      0  2.00e-06
+   pin39c5d41corr_n2000000_N1_c46_p2x23_r1.log    10  0.00e+00  0.00e+00      0  2.00e-06
+   pin39c5d41corr_n2000000_N1_c8_p1x8_r1.log    10  0.00e+00  0.00e+00      0  2.00e-06
+   pin39c5d41corr_n2000000_N2_c92_p4x23_r1.log    10  0.00e+00  0.00e+00      0  2.00e-06
+   pin39c5d41corr_n2000000_N4_c184_p8x23_r1.log    10  0.00e+00  0.00e+00      0  2.00e-06
+   pin39c5d41corr_n2000000_N8_c352_p32x11_r1.log    10  0.00e+00  0.00e+00      0  2.00e-06
+   pin39c5d41corr_n2000000_N8_c368_p16x23_r1.log    10  0.00e+00  0.00e+00      0  2.00e-06
+   forces pin39c5d41_N1_1x8 vs pin39c5d41_N4_2x23: |da|/|a|   median 8.28e-16  p99 3.46e-15  max 6.73e-14
+   forces final_N4_2x23 vs pin39c5d41_N4_2x23: |da|/|a|   median 1.19e-16  p99 1.53e-15  max 2.17e-14
+   forces pin39c5d41_N1_1x8 vs pin39c5d41_N8_2x23: |da|/|a|   median 8.60e-16  p99 3.48e-15  max 5.86e-14
+   forces pin39c5d41_N1_1x8 vs pin39c5d41_N8_4x11: |da|/|a|   median 8.52e-16  p99 3.48e-15  max 5.96e-14
+
+== 2. Runtime and tuning, 4 nodes' allocation (job 3606099): s/step  trav  decomp  tbuild
+   n=2000000  N=1 final       k=2   0.756  0.675  0.070  0.016
+   n=2000000  N=1 pin1ff2080  k=2   0.638  0.579  0.043  0.017
+   n=2000000  N=1 pin39c5d41  k=2   0.581  0.510  0.060  0.014
+   n=2000000  N=2 final       k=2   0.533  0.483  0.043  0.011
+   n=2000000  N=2 pin1ff2080  k=2   0.477  0.439  0.028  0.012
+   n=2000000  N=2 pin39c5d41  k=2   0.367  0.327  0.034  0.010
+   n=2000000  N=4 final       k=2   0.457  0.412  0.039  0.014
+   n=2000000  N=4 pin1ff2080  k=2   0.348  0.318  0.022  0.009
+   n=2000000  N=4 pin39c5d41  k=2   0.269  0.240  0.024  0.008
+   n=8000000  N=1 final       k=2   2.445  2.080  0.330  0.070
+   n=8000000  N=1 pin39c5d41  k=4   2.309  1.918  0.356  0.136
+   n=8000000  N=2 final       k=2   1.449  1.260  0.169  0.036
+   n=8000000  N=2 pin1ff2080  k=2   1.415  1.266  0.119  0.052
+   n=8000000  N=2 pin39c5d41  k=2   1.291  1.109  0.164  0.040
+   n=8000000  N=4 final       k=2   1.054  0.937  0.105  0.021
+   n=8000000  N=4 pin1ff2080  k=2   1.018  0.931  0.069  0.023
+   n=8000000  N=4 pin39c5d41  k=2   0.837  0.732  0.094  0.020
+
+== 3. Strong scaling, pinned 39c5d41, both allocations pooled: s/step  trav  decomp  tbuild  speedup
+   n=2000000  N=1 k=4   0.581  0.511  0.060  0.014   1.00x
+   n=2000000  N=2 k=4   0.379  0.339  0.034  0.010   1.53x
+   n=2000000  N=4 k=4   0.269  0.239  0.024  0.009   2.16x
+   n=2000000  N=8 k=2   0.208  0.176  0.026  0.012   2.79x
+   n=8000000  N=1 k=4   2.309  1.918  0.356  0.136   1.00x
+   n=8000000  N=2 k=4   1.310  1.126  0.166  0.041   1.76x
+   n=8000000  N=4 k=4   0.844  0.734  0.097  0.020   2.73x
+   n=8000000  N=8 k=2   0.523  0.440  0.076  0.017   4.41x
+
+== 4. 8M on ONE node (1 x 2 x 23): graceful exits
+   pin1ff2080  0 of 2
+   pin39c5d41  4 of 8
+   final       2 of 2
+   Pinned failures abort after 2-5 steps: LCI ofi register_memory_impl, fi_mr_regattr (message
+   truncated by CmiAbort). One run repeated with FI_LOG_LEVEL=warn hung after step 3 instead, and
+   job 3606099 ended in NODE_FAIL six minutes later. 8M on one node is excluded from every campaign.
+
+== 5. Memory (scripts/memguard.sh): lowest MemAvailable on any node of the run, GB; idle node ~186.5
+   pin39c5d41Mem30_n8000000_N2_c92_p4x23_r1.log                176.2
+   pin39c5d41Mem_n2000000_N1_c46_p2x23_r1.log                  178.9
+   pin39c5d41Mem_n2000000_N2_c92_p4x23_r1.log                  179.0
+   pin39c5d41Mem_n8000000_N2_c92_p4x23_r1.log                  177.4
+   pin39c5d41Mem30_n8000000_N2_c92_p4x23_r1.log                176.6
+   pin39c5d41Strong_n2000000_N1_c46_p2x23_r1.log               179.7
+   pin39c5d41Strong_n2000000_N1_c46_p2x23_r2.log               180.8
+   pin39c5d41Strong_n2000000_N2_c92_p4x23_r1.log               180.1
+   pin39c5d41Strong_n2000000_N2_c92_p4x23_r2.log               179.4
+   pin39c5d41Strong_n2000000_N4_c184_p8x23_r1.log              179.4
+   pin39c5d41Strong_n2000000_N4_c184_p8x23_r2.log              179.4
+   pin39c5d41Strong_n2000000_N8_c368_p16x23_r1.log             179.4
+   pin39c5d41Strong_n2000000_N8_c368_p16x23_r2.log             179.1
+   pin39c5d41Strong_n8000000_N2_c92_p4x23_r1.log               177.8
+   pin39c5d41Strong_n8000000_N2_c92_p4x23_r2.log               177.9
+   pin39c5d41Strong_n8000000_N4_c184_p8x23_r1.log              179.2
+   pin39c5d41Strong_n8000000_N4_c184_p8x23_r2.log              178.9
+   pin39c5d41Strong_n8000000_N8_c368_p16x23_r1.log             178.9
+   pin39c5d41Strong_n8000000_N8_c368_p16x23_r2.log             178.9
+   pin39c5d41corr_n2000000_N1_c46_p2x23_r1.log                 180.9
+   pin39c5d41corr_n2000000_N1_c8_p1x8_r1.log                   182.3
+   pin39c5d41corr_n2000000_N2_c92_p4x23_r1.log                 179.5
+   pin39c5d41corr_n2000000_N4_c184_p8x23_r1.log                179.4
+   pin39c5d41corr_n2000000_N8_c352_p32x11_r1.log               177.9
+   pin39c5d41corr_n2000000_N8_c368_p16x23_r1.log               179.4
+   8M on 2 nodes, 30 steps (logs-mem): MemAvailable falls ~60 MB per step per node after step 1.

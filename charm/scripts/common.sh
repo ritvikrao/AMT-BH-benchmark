@@ -39,6 +39,9 @@ PHYS=${PHYS:-"-G=4.498626405128888e-15 -dtime=5000 -eps=0.1"}
 # "Granularity").
 TUNE=${TUNE:-"-ppc=2000"}
 RUN_TIMEOUT=${RUN_TIMEOUT:-900}
+# A run is killed on any node whose MemAvailable falls below this (MB); see
+# memguard.sh. A node that runs out of memory takes the job down with NODE_FAIL.
+MEMGUARD_MB=${MEMGUARD_MB:-16384}
 
 mkdir -p "$LOGS"
 
@@ -96,6 +99,60 @@ reap() {
   sleep 3
 }
 
+# One memguard.sh per node of the allocation, for the length of one run. It
+# writes LOG-minus-.log.<host>.mem and runs while LOG.running exists. The run
+# does not start unless every node's guard has reported in.
+start_memguard() {
+  local log=$1 h hosts i
+  hosts=$(scontrol show hostnames "${SLURM_JOB_NODELIST:-$(hostname -s)}" 2>/dev/null || hostname -s)
+  rm -f "${log%.log}".*.mem
+  touch "$log.running"
+  # The name goes split in two, so that reap's pkill -f, which matches the
+  # binary's name on the command line, does not match the guards' own.
+  local b; b=$(basename "$BIN")
+  local args=("$BH_SCRIPTS/memguard.sh" "$log.running" "$MEMGUARD_MB" "${b:0:1}" "${b:1}" $((RUN_TIMEOUT + 120)))
+  for h in $hosts; do
+    if [ "$h" = "$(hostname -s)" ]; then
+      bash "${args[@]}" < /dev/null > /dev/null 2>&1 &
+    else
+      ssh -o StrictHostKeyChecking=no -o BatchMode=yes "$h" bash "${args[@]}" \
+        < /dev/null > /dev/null 2>&1 &
+    fi
+  done
+  # Each node checks its own guard's file: another node's view of $SCRATCH can
+  # lag by more than 15 s for a file just created elsewhere (seen on
+  # Stampede3), so testing from here would refuse runs whose guards are fine.
+  local pending=$hosts left
+  for i in $(seq 1 30); do
+    left=""
+    for h in $pending; do
+      if [ "$h" = "$(hostname -s)" ]; then
+        [ -s "${log%.log}.$h.mem" ] || left="$left $h"
+      else
+        ssh -o StrictHostKeyChecking=no -o BatchMode=yes "$h" \
+          test -s "${log%.log}.$h.mem" < /dev/null > /dev/null 2>&1 || left="$left $h"
+      fi
+    done
+    [ -z "$left" ] && return 0
+    pending=$left
+    sleep 0.5
+  done
+  rm -f "$log.running"
+  return 1
+}
+
+# Ends the run's guards and prints each node's lowest MemAvailable.
+stop_memguard() {
+  local log=$1 f h
+  rm -f "$log.running"
+  for f in "${log%.log}".*.mem; do
+    [ -e "$f" ] || continue
+    h=${f%.mem}; h=${h##*.}
+    awk -v h="$h" '/MEMGUARD KILL/ {k=1} NF == 2 && (m == "" || $2 < m) {m = $2}
+      END {printf "## memguard %s min_avail_MB %d%s\n", h, m, k ? " KILLED" : ""}' "$f"
+  done
+}
+
 # run_one TAG N NODES PROCS_PER_NODE PPN REP STEPS [extra barnes args...]
 #
 # Skips a run whose log already ends in a graceful exit, so a job that hits its
@@ -112,6 +169,16 @@ run_one() {
   if [ -s "$log" ] && grep -q "graceful exit" "$log"; then
     echo "skip $(basename "$log")"; return 0
   fi
+  # 8M bodies or more in several processes on one node aborted in LCI's memory
+  # registration in 6 of 10 runs on Stampede3, and hung runs twice left their
+  # node unresponsive, once ending the job in NODE_FAIL (README, "What to
+  # expect across nodes").
+  if [ "$nodes" = 1 ] && [ "$procs" -gt 1 ] && [ "$n" -ge 8000000 ] &&
+     [ "${ALLOW_8M_ONE_NODE:-0}" != 1 ]; then
+    echo "$(basename "$log"): REFUSED, 8M+ on one node (ALLOW_8M_ONE_NODE=1 overrides)"
+    return 0
+  fi
+  start_memguard "$log" || { echo "$(basename "$log"): NOT RUN, memory guard did not start"; return 1; }
   {
     echo "## config tag=$tag n=$n nodes=$nodes cores=$cores procs=$procs ppn=$ppn rep=$rep steps=$steps"
     echo "## machine=$MACHINE job=${SLURM_JOB_ID:-none} pemap=$map dev=${dev:-none} date=$(date -Is)"
@@ -124,6 +191,7 @@ run_one() {
         $LAUNCH_FLAGS "$BIN" +ppn "$ppn" +pemap "$map" $dev \
         $PHYS $TUNE -in="$DATA/n${n}.csv" -killat="$steps" "$@"
   } > "$log" 2>&1
+  stop_memguard "$log" >> "$log"
   reap "$nodes"
   local st
   st=$(grep -oP "\[TIMERS\] step\s+\K[\d.]+" "$log" | head -1)

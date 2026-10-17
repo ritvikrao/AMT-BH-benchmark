@@ -30,9 +30,10 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
   LCI `ca88ce2c`, whose PMI bootstrap needs P²·D key-value entries, which
   at 64 processes overruns Cray PMI2 even with `PMI_MAX_KVS_ENTRIES=1000`.
   `dfb924cf` is that pin plus the two bootstrap fixes (`06748025`,
-  `dfb924cf`). Delta runs used this. The Stampede3 runs (3b, Traversal) used
-  a prebuilt `~/charm_reconverse` instead (`reconverse-specific-build`
-  6841dfe62, Reconverse `aa1bd88`): the pin has not been built there yet.
+  `dfb924cf`). Delta runs used this, and so has Stampede3 since 2026-10-16
+  ("Pinned build on Stampede3"). The Stampede3 runs for 3b and Traversal used a
+  prebuilt `~/charm_reconverse` (`reconverse-specific-build` 6841dfe62,
+  Reconverse `aa1bd88` of 2026-06-25, 62 Reconverse commits behind the pin).
 
 ## Status
 
@@ -42,7 +43,7 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
       criteria differ, so an equal `theta` is not an equal accuracy across
       runtimes.
 - [x] **0.3** `build.sh`: pinned Charm++ `bc6d7a283` + submodule, LCI `dfb924cf`, tracing on.
-      Tested from an empty clone on Delta.
+      Tested from an empty clone on Delta, and on Stampede3 (2026-10-16, 638c403).
 - [x] **0.4** Harness in `scripts/` with machine files. Verified by the smoke
       job below: its 1-node run reproduces the 2026-09-10 energy series bit for
       bit, at 0.399 s/step against 0.447 then (different node, newer Reconverse).
@@ -66,7 +67,10 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
       with slightly better accuracy; `-balance=cost` is added, opt-in
       ([results](results/traversal-2026-10-16.txt), section "Traversal"). Imbalance
       (1.44 max/mean at 4 nodes) remains open.
-- [ ] **4** Scaling on Delta 1/2/4/8 nodes: strong 8M and 32M; weak 50k/core.
+- [ ] **4** Scaling. Done: strong 2M and 8M on 1/2/4/8 Stampede3 skx nodes with the
+      pinned build, 8M 4.41x from 1 to 8 nodes, correct on 8 nodes
+      ([results](results/pinned-2026-10-17.txt), "Pinned build on Stampede3").
+      Not done: 32M, weak scaling (50k/core), Delta.
 - [ ] **5** README multi-node section (done: "Running across nodes"), results, PR upstream.
 
 ## What has been verified, where
@@ -74,6 +78,8 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
 | date | machine | what | commit | job |
 |---|---|---|---|---|
 | 2026-09-10 | Delta, 1 node | 1-120 cores, both layouts, 138 runs ([report](results/REPORT-1node-2026-09-10.txt)) | 2cdf1d5 | 21945686 |
+| 2026-10-17 | Stampede3 skx, 1/2/4/8 nodes | **Pinned build** (`build.sh`): 2M energy series identical to all printed digits on 1x8, 1x2x23, 2x2x23, 4x2x23, 8x2x23 and 8x4x11 (352 PEs); forces vs 1x8 max 6.0e-14 at 8 nodes; same code on the June runtime: energies identical, forces 2.2e-14 | 39c5d41 | 3609153 (batch) |
+| 2026-10-16 | Stampede3 skx, 1/2/4 nodes | **Pinned build**, 1ff2080 and 39c5d41 against 39c5d41 on `~/charm_reconverse`: each identical to its own 1x8 on 1x2x23, 2x2x23, 4x2x23, 4x4x11 | 1ff2080, 39c5d41 | 3606099 (idev; ended in NODE_FAIL, see below) |
 | 2026-10-16 | Stampede3 skx, 1/2/4 nodes | **Traversal** (`chunkdepth` 4, leaf 24): 8M energy series identical to all printed digits on 1x2x23, 2x2x23 and 4x2x23, with `-balance` count and cost; with `-b=10 -chunkdepth=3` the binary reproduces 1ff2080 exactly; leaf 24 force error vs direct sum 4.77e-3 median (leaf 10: 5.11e-3) | 39c5d41 | 3605876, 3605917 (idev) |
 | 2026-10-16 | Stampede3 skx, 1/2/4 nodes | **3b** (moments skeleton): old and new binaries on 1x8, 1x2x23, 2x2x23, 4x2x23 and 4x4x11 (184 PEs). Energy series identical to all printed digits; same layout old vs new, forces max 3.8e-14; new 1x8 vs 4 nodes 7.3e-14 | 1ff2080 | 3605652 (idev) |
 | 2026-10-15 | Delta, 4 nodes | **3a** (DM-to-DM exchange): 1x8 vs 4x8x15 energy identical to all digits, forces 7e-14 | bbce8b0 | 22918357 |
@@ -87,9 +93,12 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
    template; work through every `VERIFY` item there first. The Stampede3 file
    is tested on skx (2026-10-16). It reads the core layout from `numactl -H`
    inside a job, because Stampede3 numbers cores interleaved across sockets.
-   On Stampede3, run in an interactive allocation (`idev -p skx-dev -N 4`, held in
-   `tmux`) and start campaigns there with `bash scripts/job.sh <campaign>`.
-   `salloc` is refused by TACC's submit filter.
+   On Stampede3, use `skx-dev` (up to 16 nodes, 2 h; the `skx` queue can wait
+   many hours). Work interactively in `idev` held in `tmux`, starting campaigns
+   with `bash scripts/job.sh <campaign>`; `salloc` is refused by TACC's submit
+   filter. Submit anything that may wait as a batch job: an `idev` allocation
+   that starts with nobody attached idles to its limit (job 3606096, 8 nodes x
+   90 min, lost that way).
 3. Build: `cd charm && ./build.sh` (fetches and builds the pinned Charm++), or
    `CHARM_PATH=<built target> ./build.sh` to use one you have.
 4. Data: clone https://github.com/vancraar/DataGenerator, then
@@ -374,7 +383,8 @@ computes 1.4x the mean, and the busiest PE serves twice the mean. Candidates:
 - aggregate requests to the same PE into one message, since the cost is per
   message.
 
-8M on *one* node misbehaved in 5 of 11 runs on `~/charm_reconverse`.
+8M on *one* node misbehaved in 5 of 11 runs on `~/charm_reconverse`; on the
+pinned build it is worse (see "Pinned build on Stampede3").
 - Three hung after their last step until the run timeout, at exit or just
   before it.
 - One took 2 minutes to exit.
@@ -385,6 +395,62 @@ Of 53 logs, only this configuration prints `Allocating out of pool`: 359-414
 times a run, from the LCI backend's per-message allocation and registration of
 messages over its pool size. Check it with a current Reconverse before trusting
 single-node 8M numbers.
+
+## Pinned build on Stampede3 (2026-10-16/17, jobs 3606099, 3608433, 3609153)
+
+`build.sh` from an empty clone of 638c403 builds the pinned Charm++ on
+Stampede3 in a few minutes, with LCI's ofi backend found against the system
+libfabric 2.6. Its binaries carry an rpath, so they need no
+`LD_LIBRARY_PATH`. A bare `./run.sh` aborts in LCI's default ibv backend; with
+the `verbs;ofi_rxm` variables it runs (README, "Stampede3").
+[Results](results/pinned-2026-10-17.txt).
+
+**Correctness.** Unchanged by the runtime: 39c5d41 gives the same energies on
+the June Reconverse and the pinned one, and forces within 2.2e-14. On 8 nodes
+(368 PEs, and 8 x 4 x 11) energies are identical to 1x8 and forces within
+6.0e-14.
+
+**The pinned runtime is faster**, most where messages dominate. Same code
+(39c5d41), same allocation, s/step:
+
+| | 1 node | 2 nodes | 4 nodes |
+|---|---|---|---|
+| 8M, June Reconverse | 2.445 | 1.449 | 1.054 |
+| 8M, pinned | 2.309 | 1.291 | 0.837 |
+| 2M, June Reconverse | 0.756 | 0.533 | 0.457 |
+| 2M, pinned | 0.581 | 0.367 | 0.269 |
+
+On the pinned runtime the traversal tuning (1ff2080 -> 39c5d41) is worth 1.10x
+at 8M on 2 nodes and 1.22x on 4, against 1.42x and 1.40x on the June one,
+likely because the newer runtime already removed part of the per-message cost
+that the tuning cuts. Not measured directly.
+
+**Scaling**, pinned, 39c5d41, medians of 2-4 runs:
+
+| nodes | 8M s/step | speedup | 2M s/step | speedup |
+|---|---|---|---|---|
+| 1 | 2.309 | 1.00x | 0.581 | 1.00x |
+| 2 | 1.310 | 1.76x | 0.379 | 1.53x |
+| 4 | 0.844 | 2.73x | 0.269 | 2.16x |
+| 8 | 0.523 | 4.41x | 0.208 | 2.79x |
+
+**8M on one node: do not run it.** On the pinned build it aborted in 6 of 10
+runs (39c5d41 4 of 8, 1ff2080 2 of 2), always after 2-5 steps and always in
+LCI's ofi `register_memory_impl`: `fi_mr_regattr` failed (CmiAbort truncates
+the message before the error code). A repeat with `FI_LOG_LEVEL=warn` hung
+after step 3 instead, and six minutes later job 3606099 ended in `NODE_FAIL`
+on that node; the earlier unreachable head node (job 3605876) was the same
+configuration on the June runtime. `run_one` now refuses the configuration.
+
+It is not memory exhaustion. `scripts/memguard.sh`, which every run now has,
+logs each node's `MemAvailable`: an idle node has ~186.5 GB, and no run went
+below 176 GB on any node, so none used more than ~10 GB. Memory does grow
+~60 MB per step per node (8M on 2 nodes over 30 steps), far too slowly to
+matter here. Still open: what in the single-node case makes registration fail.
+Two leads, neither tested: `verbs;ofi_rxm` has no shared-memory path, so on
+one node all of the exchange between the two processes goes through the NIC's
+loopback; and the June runtime logged `Allocating out of pool`, its path for
+messages larger than the pool, only in this configuration.
 
 ## Step 3: costs that grow with P x T
 
