@@ -44,8 +44,8 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
       runtimes.
 - [x] **0.3** `build.sh`: pinned Charm++ `bc6d7a283` + submodule, LCI `dfb924cf`, tracing on.
       Tested from an empty clone on Delta, and on Stampede3 (2026-10-16, 638c403).
-- [x] **0.4** Harness in `scripts/` with machine files. Verified by the smoke
-      job below: its 1-node run reproduces the 2026-09-10 energy series bit for
+- [x] **0.4** Harness in `scripts/` with machine files. Verified by a smoke
+      job: its 1-node run reproduces the 2026-09-10 energy series bit for
       bit, at 0.399 s/step against 0.447 then (different node, newer Reconverse).
 - [x] **1** E_P bug: confirmed (stale TreePiece keys), fixed (77a8a5a). Found and
       fixed a second layout dependence on the way (per-PE box padding, 23217cc).
@@ -97,8 +97,7 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
    many hours). Work interactively in `idev` held in `tmux`, starting campaigns
    with `bash scripts/job.sh <campaign>`; `salloc` is refused by TACC's submit
    filter. Submit anything that may wait as a batch job: an `idev` allocation
-   that starts with nobody attached idles to its limit (job 3606096, 8 nodes x
-   90 min, lost that way).
+   that starts with nobody attached idles to its limit.
 3. Build: `cd charm && ./build.sh` (fetches and builds the pinned Charm++), or
    `CHARM_PATH=<built target> ./build.sh` to use one you have.
 4. Data: clone https://github.com/vancraar/DataGenerator, then
@@ -109,40 +108,10 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
    `scripts/compare_energy.py` (see Step 2).
 7. Record the result in the table above and commit.
 
-## Jobs in flight (update as they land)
-
-| job | what | binary | state |
-|---|---|---|---|
-| 22904250 | `baseline`, 4 nodes: 2M and 8M at 1/2/4 nodes, before 3a | barnes-3e9fe70 | **done** 2026-10-14, see "Baseline" below |
-| 22904453 | `gendata 48000000`, 1 node | -- | **done**: n48000000.csv, 7.5 GB, 15 min |
-| 22918357 | `baseline` BASELINE_TAG=b3a, 4 nodes: 3a's 4-node correctness against 1x8, and its timings | barnes-bbce8b0 | **done** 2026-10-15: correct; see "After 3a" |
-| 22904246 | `baseline`, 8 nodes: 8-node correctness and timings, before 3a (reuses the 1-4 node logs) | barnes-3e9fe70 | queued as of 2026-10-14 (est. start 2026-10-16 10:47); not checked since. Its binary predates 3a and 3b, so only its 8-node correctness result still matters |
-
-The first attempt at 3a's correctness check never ran: its WAIT=1 feeder
-crashed when submit.sh was edited under it. submit.sh now runs from a
-private copy.
-
 Frozen binaries live in `$BH_WORK/bin/barnes-<commit>`. A job runs whatever
-binary exists when it *starts*, so anything queued for hours pins one with
-`BIN=`.
-
-## Running jobs on Delta fast
-
-Measured 2026-10-14 (`scontrol`, `sacctmgr`, `sshare`, `sbatch --test-only`):
-
-| route | limits | start estimate |
-|---|---|---|
-| `cpu-interactive` | ≤4 nodes, ≤1 h, **one job submitted per user** | ~1 h on either account |
-| `cpu`, mzu-delta-cpu (fairshare 0.148) | none relevant | 2-4 nodes ~6.5 h; 8 nodes ~10.5 h |
-| `cpu`, rfp-delta-cpu (fairshare 0.035) | none relevant | ~3 days |
-
-- Anything that fits in 4 nodes and 1 h goes to `cpu-interactive`.
-  `submit.sh` does this automatically; `WAIT=1` waits for the single slot.
-- 8-node jobs go to `cpu`, under whichever account `--test-only` says starts
-  first. Fairshare changes daily, so `submit.sh` asks every time. Keep time
-  limits tight so jobs backfill, and submit them early.
-- `run_one` skips runs whose log already shows a graceful exit, so a
-  resubmitted job picks up where it stopped.
+binary exists when it *starts*, so anything that may queue for hours pins one
+with `BIN=`. `run_one` skips runs whose log already shows a graceful exit, so a
+resubmitted job picks up where it stopped.
 
 ## Step 1: the E_P excursion bug (done)
 
