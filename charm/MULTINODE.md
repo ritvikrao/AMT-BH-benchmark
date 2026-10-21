@@ -55,6 +55,11 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
       still has the Step 1 bug, which tiny softening magnifies; our branch had
       a second fault, the self-term cancellation. The kernel now skips the
       self term, and `eps=0` works ([results](results/issue7-ep-2026-10-21.txt)).
+- [ ] **P** Single-core performance (issue #7): vectorised interaction-list
+      kernel and devirtualised walk (c185cda), 2.5x on one core; at 4M bodies
+      within 1.15x of Julia-Dagger at 1-120 cores and ahead of ItoyoriFBC
+      ([results](results/perf-1node-2026-10-21.txt)). Open: leaf 1 (5.3x behind
+      Julia; needs a group walk), HPX comparison.
 - [x] **2** Correctness matrix on 1, 2 and 4 nodes passes
       ([results](results/correctness-2026-10-14.txt)). `run.sh` takes `NODES`.
 - [x] **3a** Particle exchange: DM-to-DM with exact counts (bbce8b0). Verified on

@@ -1,0 +1,45 @@
+Single-node performance against the other implementations (issue #7).
+Delta, one CPU node (2 x AMD EPYC 7763, 128 cores), cpu-interactive jobs
+23105572 (cn124), 2026-10-21. Input: the issue #7 three-galaxy collision
+(DataGenerator 15afd52 examples/collision_three_galaxies.json, bodies
+52/32/16 %, masses scaled to G = 1.488185170503113e-34), 4M bodies.
+theta 0.5, softening 1e-11, dt 0.0416667, leaf 10 unless noted, the issue's
+command lines (results/issue7-ep-2026-10-21.txt has the Charm++ one).
+
+Seconds per step, mean of steps 1-3 (warm-up step 0 excluded, as the issue
+and Julia-Dagger do). Charm++: one process with C PEs unless noted.
+Julia-Dagger: upstream/julia-dagger 2d899e8, Julia 1.12.7, one process,
+C threads. ItoyoriFBC: upstream/main 2563694, Cray MPICH, C ranks, per-step
+from a 4-step minus a 1-step run, input excluded.
+
+  cores  Charm++ d2eb897  Charm++ c185cda  Julia-Dagger  ItoyoriFBC
+      1      41.45            16.30           14.16        23.36
+     16       3.36             1.543           1.300        1.701
+     64       0.985            0.515           0.500        0.588 (4 GiB pool; the
+                                                                   issue's formula fails)
+    120       0.609 (8x15)     0.343 (8x15)    0.315        fails: pool too small
+                               0.347 (1x120)
+  Leaf 1, 64 cores:            2.96            0.562
+
+HPX: not yet measured (build in progress).
+
+What changed (c185cda), one PE, 400k bodies of the same input:
+  traversal 2.81 -> 1.01 s/step, step 3.03 -> 1.24
+  - before: 93% of the step was the walk, 8.9 ns per interaction; the
+    kernel was scalar SSE2 with a sqrt and two divides per interaction and
+    stored each target's sums to memory after every source
+  - interaction-list kernel vectorised with AVX2 (-march=native,
+    -fno-math-errno, -fno-trapping-math): 2.81 -> 1.18
+  - devirtualised walk, fixed-array stack: 1.18 -> 1.01
+
+Still open:
+  - leaf 1 is 5.3x slower than Julia at 64 cores. Each leaf walks the
+    tree alone: 770M node visits per step at 400k bodies, against 53M at
+    leaf 10. Julia walks groups of particles together with a per-particle
+    test. A group walk that keeps our per-bucket test gives the same
+    interactions (results to roundoff) at a fraction of the visits.
+  - at leaf 10 the walk (node visits) is now ~2x the kernel time on one PE.
+  - cost-based balancing (-balance=cost) does not change the steady-state
+    step at 16-120 PEs (within 3%).
+  - step 0 is slower than later steps at high PE counts (1x120: 0.88 s vs
+    0.35 s), so averages that include step 0 overstate the step time.
