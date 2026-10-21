@@ -29,24 +29,32 @@ void TreePiece::prepare(Node<ForceData> *_root, Node<ForceData> **buckets, int b
   myNumBuckets = bucketEnd-bucketStart;
 }
 
-// Cut myBuckets into runs of at most WALK_GROUP_MAX_BUCKETS buckets and
-// globalParams.walkGroupParticles particles (a bucket larger than that walks
-// alone). Consecutive buckets are neighbours along the space-filling curve,
-// so a group is compact and its buckets accept and open mostly the same
-// nodes. -walkgroup=1 gives one bucket per group, the walk per bucket.
+// Cut the buckets that hold particles into runs of at most
+// WALK_GROUP_MAX_BUCKETS buckets and globalParams.walkGroupParticles
+// particles (a bucket larger than that walks alone). Consecutive buckets are
+// neighbours along the space-filling curve, so a group is compact and its
+// buckets accept and open mostly the same nodes. -walkgroup=1 gives one
+// bucket per group, the walk per bucket. Empty buckets are left out: they
+// have no forces to compute, and a refinement leaves many of them, most of
+// all in an octree.
 void TreePiece::formWalkGroups(){
+  walkBuckets.clear();
+  for(int i = 0; i < myNumBuckets; i++)
+    if(myBuckets[i]->getNumParticles() > 0) walkBuckets.push_back(myBuckets[i]);
+  const int numWalkBuckets = walkBuckets.size();
+
   walkGroups.clear();
   int i = 0;
-  while(i < myNumBuckets){
+  while(i < numWalkBuckets){
     WalkGroup g;
-    g.buckets = myBuckets + i;
+    g.buckets = walkBuckets.data() + i;
     g.numBuckets = 0;
     int particles = 0;
-    while(i < myNumBuckets && g.numBuckets < WALK_GROUP_MAX_BUCKETS){
-      int np = myBuckets[i]->getNumParticles();
+    while(i < numWalkBuckets && g.numBuckets < WALK_GROUP_MAX_BUCKETS){
+      int np = walkBuckets[i]->getNumParticles();
       if(g.numBuckets > 0 && particles + np > globalParams.walkGroupParticles) break;
       particles += np;
-      const Vector3D<Real> &cm = myBuckets[i]->data.moments.cm;
+      const Vector3D<Real> &cm = walkBuckets[i]->data.moments.cm;
       g.cx[g.numBuckets] = cm.x;
       g.cy[g.numBuckets] = cm.y;
       g.cz[g.numBuckets] = cm.z;
@@ -68,14 +76,13 @@ void TreePiece::startTraversal(){
   numTraversalsDone = 0;
   trav.setDataManager(myDM);
 
-  if(myNumBuckets == 0){
+  formWalkGroups();
+  const int numGroups = walkGroups.size();
+  if(numGroups == 0){
     localGravityDone();
     remoteGravityDone();
     return;
   }
-
-  formWalkGroups();
-  const int numGroups = walkGroups.size();
 
   remoteTraversalState.reset(this,numGroups,NULL);
   remoteTraversalWorker.reset(this,&remoteTraversalState);

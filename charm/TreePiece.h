@@ -21,7 +21,9 @@ class TreePiece : public CBase_TreePiece {
 
   int myNumBuckets;
   Node<ForceData> **myBuckets;
-  // This step's walk groups: consecutive runs of myBuckets (WalkGroup.h).
+  // This step's buckets that hold particles, and the walk groups cut from
+  // them: consecutive runs (WalkGroup.h).
+  std::vector<Node<ForceData>*> walkBuckets;
   std::vector<WalkGroup> walkGroups;
   void formWalkGroups();
   Node<ForceData> *root;
