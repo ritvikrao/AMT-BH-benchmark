@@ -6,22 +6,35 @@ Delta, one CPU node (2 x AMD EPYC 7763, 128 cores), cpu-interactive jobs
 theta 0.5, softening 1e-11, dt 0.0416667, leaf 10 unless noted, the issue's
 command lines (results/issue7-ep-2026-10-21.txt has the Charm++ one).
 
-Seconds per step, mean of steps 1-3 (warm-up step 0 excluded, as the issue
-and Julia-Dagger do). Charm++: one process with C PEs unless noted.
-Julia-Dagger: upstream/julia-dagger 2d899e8, Julia 1.12.7, one process,
-C threads. ItoyoriFBC: upstream/main 2563694, Cray MPICH, C ranks, per-step
-from a 4-step minus a 1-step run, input excluded.
+Seconds per step, mean of the steady steps (warm-up step 0 excluded, as the
+issue, HPX's STEADY_AVG_STEP and Julia-Dagger's step_mean do). Charm++: one
+process with C PEs unless noted. HPX: upstream/hpx 1bf68f8 (HPX cba138f,
+-march=znver3, --walk simd --fc let), one locality, C threads, srun -c C
+--cpu-bind=cores. Julia-Dagger: upstream/julia-dagger 2d899e8, Julia 1.12.7,
+one process, C threads. ItoyoriFBC: upstream/main 2563694, Cray MPICH, C
+ranks, per-step from a 4-step minus a 1-step run, input excluded. Builds and
+wrappers: /work/nvme/mzu/rao1/bh-others/*-notes/README.txt.
 
-  cores  Charm++ d2eb897  Charm++ c185cda  Julia-Dagger  ItoyoriFBC
-      1      41.45            16.30           14.16        23.36
-     16       3.36             1.543           1.300        1.701
-     64       0.985            0.515           0.500        0.588 (4 GiB pool; the
-                                                                   issue's formula fails)
-    120       0.609 (8x15)     0.343 (8x15)    0.315        fails: pool too small
-                               0.347 (1x120)
-  Leaf 1, 64 cores:            2.96            0.562
+4M bodies, leaf 10:
+  cores  HPX     Julia-Dagger  Charm++ 3a54c7e  Charm++ d2eb897  ItoyoriFBC
+      1  9.830   14.16         13.42            41.45            23.36
+     16  0.727    1.300         1.386            3.36             1.701
+     64  0.278    0.500         0.451            0.985            0.588 (4 GiB pool;
+                                                                  the issue's formula fails)
+    120  0.178    0.315         0.311 (1x120)    0.609 (8x15)     fails: pool too small
+                                0.315 (8x15)
+  64, leaf 1:  HPX 0.322, Julia-Dagger 0.562, Charm++ 1.818 (was 2.96)
 
-HPX: not yet measured (build in progress).
+400k bodies, 1 thread: leaf 10 HPX 0.774, Julia 1.091, Charm++ 1.097;
+                       leaf 1  HPX 0.902, Julia 1.151, Charm++ 4.82
+
+Where the remaining gap to HPX is (4M, 3a54c7e against HPX's phase timers):
+  1 core:  traversal 11.51 vs interact 9.55; decomposition 1.17 vs domain
+           0.037; tree build 0.48 vs 0.25
+  64 PEs:  traversal 0.338 vs 0.207; decomposition 0.077 vs 0.010; "other"
+           (PE 0 waiting for the slowest PE) 0.190 vs 0.007. -DPE_DIAG:
+           particle-node interactions per PE range 115M-224M at equal
+           particle counts, so the wait is load imbalance in the walk.
 
 What changed (c185cda), one PE, 400k bodies of the same input:
   traversal 2.81 -> 1.01 s/step, step 3.03 -> 1.24
@@ -32,14 +45,17 @@ What changed (c185cda), one PE, 400k bodies of the same input:
     -fno-math-errno, -fno-trapping-math): 2.81 -> 1.18
   - devirtualised walk, fixed-array stack: 1.18 -> 1.01
 
-Still open:
-  - leaf 1 is 5.3x slower than Julia at 64 cores. Each leaf walks the
-    tree alone: 770M node visits per step at 400k bodies, against 53M at
-    leaf 10. Julia walks groups of particles together with a per-particle
-    test. A group walk that keeps our per-bucket test gives the same
-    interactions (results to roundoff) at a fraction of the visits.
-  - at leaf 10 the walk (node visits) is now ~2x the kernel time on one PE.
-  - cost-based balancing (-balance=cost) does not change the steady-state
-    step at 16-120 PEs (within 3%).
-  - step 0 is slower than later steps at high PE counts (1x120: 0.88 s vs
-    0.35 s), so averages that include step 0 overstate the step time.
+Then (3a54c7e) walk groups: a TreePiece's buckets walk in runs of up to 32
+buckets / 64 particles, each bucket still tested at every node (identical
+interactions). 400k, 1 PE: leaf 10 1.248 -> 1.097 s/step, leaf 1 7.99 ->
+4.82; 4M on 1x120 0.350 -> 0.311.
+
+Still open, in order of size:
+  - leaf 1: 5.6x behind HPX at 64 cores. 770M opening tests per step at
+    400k (1924 per particle) at ~5 ns each; HPX and Julia test 16 bodies per
+    SIMD packet and apply accepted nodes to the packet directly.
+  - load imbalance at 64+ PEs (above); -balance=cost did not help (tested
+    before the group walk).
+  - decomposition every step: 30x HPX's on one core; HPX repartitions every
+    24 steps (DIFFERENCES.md #7, the every-k option).
+  - kernel and walk on one core: 1.2x HPX (HPX builds with -ffast-math).
