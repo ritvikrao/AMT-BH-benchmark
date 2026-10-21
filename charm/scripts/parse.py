@@ -3,6 +3,8 @@
 
 Reads the [TIMERS] phase table, the [BALANCE] line and the [ENERGY] lines that
 barnes prints, and writes a flat table for the scaling plots.
+
+    scripts/parse.py OUT.csv LOG [LOG ...]
 """
 import csv, os, re, sys
 
@@ -50,6 +52,10 @@ def parse(path):
     return r
 
 if __name__ == "__main__":
+    # The first argument is the output and is overwritten, so a shell glob
+    # passed alone would replace its first log with the table.
+    if len(sys.argv) < 3 or not sys.argv[1].endswith(".csv"):
+        sys.exit("usage: parse.py OUT.csv LOG [LOG ...]")
     rows = [parse(p) for p in sys.argv[2:]]
     rows = [r for r in rows if r.get("step_max") is not None]
     rows.sort(key=lambda r: (r.get("tag", ""), r.get("n", 0), r.get("cores", 0), r.get("rep", 0)))
