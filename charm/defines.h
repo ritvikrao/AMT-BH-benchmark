@@ -24,8 +24,19 @@
 #define DIV2(x) ((x)>>1)
 #define EVEN(x) ((DIV2(x)<<1)==(x))
 
+// The tree's branching factor: 2 (binary, the default) or 8 (octree), set at
+// build time with `make BRANCH=8`. The tree is part of the opening criterion,
+// so the two compute different interactions: MULTINODE.md, "Tree shape".
+#ifndef BRANCH_FACTOR
 #define BRANCH_FACTOR 2
+#endif
+#if BRANCH_FACTOR == 2
 #define LOG_BRANCH_FACTOR 1
+#elif BRANCH_FACTOR == 8
+#define LOG_BRANCH_FACTOR 3
+#else
+#error "BRANCH_FACTOR must be 2 or 8"
+#endif
 
 const double opening_geometry_factor = 2 / sqrt(3.0);
 

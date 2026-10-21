@@ -319,6 +319,50 @@ run back to back with the new one in the same allocation (`campaigns/ab.sh`).
   used. The cause was not investigated. It came after the run had finished,
   and none of the 17 new-binary runs did it.
 
+## Tree shape (2026-10-21, Delta cpu-interactive job 23108251)
+
+Issue #7 input, 400k bodies, theta 0.5, one PE unless noted; force error is
+|da|/|a| against `tools/direct_sum` at step 0 (`results/perf-1node-2026-10-21.txt`).
+
+**Cubic keys (default now).** `hashParticleCoordinates` scaled each axis by
+its own extent, so on this flat input (92 x 92 x 11.6) every cell was 8
+times flatter than wide, and the opening test, whose size term is the
+particles' extent, accepted far less per interaction. One span for all axes:
+
+| tree, leaf | interactions | traversal s/step | median error | p99 |
+|---|---|---|---|---|
+| binary, per-axis keys, 1 | 242M | 1.63 | 1.36e-3 | 5.3e-3 |
+| binary, cubic keys, 1 | 112M | 0.76 | 9.2e-4 | 4.1e-3 |
+| binary, per-axis keys, 10 | 315M | 0.835 | 1.39e-3 | 6.1e-3 |
+| binary, cubic keys, 10 | 144M | 0.385 | 9.0e-4 | 4.9e-3 |
+
+**Octree (`make BRANCH=8`), not the default.** The tree's branching factor
+was already a parameter; building with 8 failed only because spending the
+leftover TreePiece budget counted one TreePiece per split (fixed: a split
+adds BRANCH_FACTOR-1). It passes the same checks as the binary tree: energies
+identical on 1, 1x16 and 8x15 PEs at leaf 1 and 10, CHECK_TRAVERSAL_MASS
+spread under 1e-14. At equal median error the octree is faster at leaf 1
+only, and its tails are worse everywhere:
+
+| leaf | binary (cubic) | octree (cubic) |
+|---|---|---|
+| 1 | theta 0.4: 1.10 s, median 5.6e-4, p99 2.4e-3 | theta 0.5: 0.81 s, median 5.7e-4, p99 3.3e-3 |
+| 1 | theta 0.5: 0.76 s, median 9.2e-4, p99 4.1e-3 | theta 0.6: 0.59 s, median 8.6e-4, p99 4.7e-3 |
+| 10 | theta 0.4: 0.62 s, median 5.0e-4, p99 2.3e-3 | theta 0.5: 0.59 s, median 6.7e-4, p99 5.3e-3, max 0.54 |
+| 10 | theta 0.5: 0.385 s, median 9.0e-4, p99 4.9e-3 | theta 0.6: 0.42 s, median 1.05e-3, p99 9.0e-3 |
+
+Across PEs it is much worse (4M, 1x64, leaf 10: 1.108 s/step against 0.253):
+each octree split spends 7 TreePieces, mostly on near-empty octants, so the
+budget runs out with dense bins unsplit (largest TreePiece 28k particles,
+particles per PE up to 5.5x the mean). -p=16000 brings it to 0.333 s; the
+rest is that TreePieces go to PEs in equal blocks of indices rather than by
+count, which uneven octree pieces expose. `chunkdepth` 1-3 makes no
+difference (2 is the octree default).
+
+**Empty buckets** are left out of the walk (6940f80): an empty bucket walked
+from (0,0,0) with nothing to compute; at leaf 1 they were a third of the
+opening tests.
+
 ## Traversal (2026-10-16, Stampede3 idev jobs 3605789, 3605876, 3605917)
 
 After 3b the traversal was 93% of the step and scaled 2.1x from 1 to 4 nodes

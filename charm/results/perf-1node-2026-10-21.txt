@@ -81,3 +81,16 @@ Still open, in order of size:
   - decomposition every step: 30x HPX's on one core; HPX repartitions every
     24 steps (DIFFERENCES.md #7, the every-k option).
   - kernel and walk on one core: 1.2x HPX (HPX builds with -ffast-math).
+
+== 2026-10-21 evening: empty buckets, cubic keys, octree (job 23108251, cn074)
+Full tables in MULTINODE.md, "Tree shape". 4M bodies, binary tree with cubic
+keys (default from this commit), mean of steps 1-3 (1 PE: steps 1-2):
+  cores        leaf 10   leaf 1      HPX leaf 10 / leaf 1
+      1         6.937      -          9.830
+     16         0.846    1.961        0.727
+     64         0.253    0.556        0.278 / 0.322
+    120         0.146 (8x15), 0.162 (1x120); leaf 1 0.360 (8x15)   0.178
+Octree (make BRANCH=8), 4M: 1x64 leaf 10 1.108, leaf 1 1.930; 1x120 0.674 /
+1.125; with -p=16000 1x64 0.333 / 0.647.
+Accuracy is not matched with HPX: E_P error vs the exact sum, 400k, theta
+0.5: ours 1.07e-3 (binary, cubic, leaf 1), HPX 7e-4 (leaf 1).

@@ -89,6 +89,12 @@ median force error is 5.5e-3 and the 99th percentile 3.9e-2.
 **Status: deferred** (decision 2026-10-14). Nothing is changed until the
 project agrees.
 
+**2026-10-21:** the cubic root is in (proposal 1, keys only): every axis is
+now normalised by the largest extent, so cells are cubes. On the issue #7
+galaxies it halves the interactions and lowers the force error (MULTINODE.md,
+"Tree shape"). The size term is still `sqrt(rsq)`, not the cell edge, and the
+test is still per bucket.
+
 ### 2. Multipole order
 
 TTG applies quadrupoles by default (`ttg-parsec/src/main.cc:26`,

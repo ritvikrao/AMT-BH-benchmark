@@ -331,6 +331,15 @@ void DataManager::hashParticleCoordinates(const OrientedBox<Real> &universe){
   Real xsz = universe.greater_corner.x-universe.lesser_corner.x;
   Real ysz = universe.greater_corner.y-universe.lesser_corner.y;
   Real zsz = universe.greater_corner.z-universe.lesser_corner.z;
+  // One span for all three axes, so that the tree's cells are cubes. Each
+  // axis used to be scaled by its own extent, which on a flat input (the
+  // issue #7 galaxies, 92 x 92 x 11.6) makes every cell 8 times flatter than
+  // it is wide; the opening test then accepts far less per interaction.
+  // Cubic cells: half the interactions and a smaller force error (400k
+  // bodies, theta 0.5, leaf 10: 315M -> 144M interactions, median error
+  // 1.39e-3 -> 9.0e-4). HPX made the same change (e3c397b).
+  const Real span = std::max(xsz, std::max(ysz, zsz));
+  xsz = ysz = zsz = span;
 
   for(unsigned int i = 0; i < myNumParticles; i++){
     Particle *p = &(myParticles[i]);
@@ -552,7 +561,10 @@ void DataManager::receiveHistogram(CkReductionMsg *msg){
       }
     }
 
-    int room = globalParams.numTreePieces - numTreePieces;
+    // Each split adds BRANCH_FACTOR-1 TreePieces, so the room left is that
+    // many splits fewer. (Counted as one per split, an octree overshot -p and
+    // addressed TreePieces past the end of the array.)
+    int room = (globalParams.numTreePieces - numTreePieces)/(BRANCH_FACTOR-1);
     int take = (int)candidates.size() < room ? (int)candidates.size() : room;
 
     partial_sort(candidates.begin(),candidates.begin()+take,candidates.end());

@@ -1,6 +1,8 @@
 #ifndef __DEFAULTS_H__
 #define __DEFAULTS_H__
 
+#include "defines.h"   // BRANCH_FACTOR
+
 #define DEFAULT_THETA 0.5 
 #define DEFAULT_DT 0
 #define DEFAULT_DTIME 0.025
@@ -33,7 +35,12 @@
 // Levels of the tree a remote fetch returns. 4 rather than 3: 8M bodies on 4
 // Stampede3 nodes, 1.41 -> 1.27 s/step (node fetches per PE 29k -> 22k);
 // 2 is 1.71 and 5 is 1.34. MULTINODE.md, "Traversal".
+// An octree level is three binary levels, so the octree fetches fewer.
+#if BRANCH_FACTOR == 8
+#define DEFAULT_CHUNK_DEPTH 2
+#else
 #define DEFAULT_CHUNK_DEPTH 4
+#endif
 #define DEFAULT_YIELD_PERIOD 5
 #define DEFAULT_WALK_GROUP_PARTICLES 64
 #define DEFAULT_WALK "auto"
