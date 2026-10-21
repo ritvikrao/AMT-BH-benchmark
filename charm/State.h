@@ -93,9 +93,9 @@ struct State {
 #endif
   }
 
-  void incrOpenCriterion(){
+  void incrOpenCriterion(int n = 1){
 #ifdef STATISTICS
-    numInteractions[2]++;
+    numInteractions[2] += n;
 #endif
   }
 };

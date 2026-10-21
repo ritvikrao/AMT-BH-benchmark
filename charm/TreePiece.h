@@ -2,6 +2,7 @@
 #define __TREE_PIECE_H__
 
 #include "defines.h"
+#include <vector>
 #include "OrientedBox.h"
 #include "barnes.decl.h"
 #include "Particle.h"
@@ -20,6 +21,9 @@ class TreePiece : public CBase_TreePiece {
 
   int myNumBuckets;
   Node<ForceData> **myBuckets;
+  // This step's walk groups: consecutive runs of myBuckets (WalkGroup.h).
+  std::vector<WalkGroup> walkGroups;
+  void formWalkGroups();
   Node<ForceData> *root;
 
   State localTraversalState;

@@ -7,8 +7,12 @@
 #include "Descriptor.h"
 #include "State.h"
 #include "gravity.h"
+#include "WalkGroup.h"
 
 #include <map>
+#if defined(__AVX2__)
+#include <immintrin.h>
+#endif
 using namespace std;
 
 // worker abstract class
@@ -96,12 +100,15 @@ extern thread_local std::map<Key,Real> traversalMass;
 #endif
 
 class State;
-class TraversalWorker : public CutoffWorker<ForceData> {
+// The gravity walk's worker. It walks for a group of buckets at a time
+// (WalkGroup.h): visit() takes the buckets still walking and returns the ones
+// that open the node; each of the others applies the node, unless it is a
+// Boundary node this walk leaves to the other one.
+class TraversalWorker {
   protected:
   TreePiece *ownerTreePiece;
   State *state;
-  
-  Node<ForceData> *currentBucket;
+  WalkContext ctx;
 
   // Which node types this walk handles (indexed by NodeType), and whether it
   // applies an unopened Boundary node. Both traversals keep Boundary nodes --
@@ -109,85 +116,111 @@ class TraversalWorker : public CutoffWorker<ForceData> {
   // of the tree, so each has to be able to walk down through it. When such a
   // node is *not* opened, though, its multipole stands for its whole subtree,
   // local and remote alike, and only one of the two may apply it: the local
-  // traversal does. Data rather than virtual functions, so that work() --
+  // traversal does. Data rather than virtual functions, so that visit() --
   // called for every node the walk meets -- makes no calls of its own.
   const bool *keep;
   bool appliesUnopenedBoundary;
 
   TraversalWorker(const bool *k, bool unopenedBoundary) : 
     ownerTreePiece(NULL),
-    currentBucket(NULL),
+    state(NULL),
     keep(k),
     appliesUnopenedBoundary(unopenedBoundary)
   {
   }
 
   public:
+  virtual ~TraversalWorker() {}
 
-  void reset(TreePiece *owner, State *s, Node<ForceData> *bucket){
+  void reset(TreePiece *owner, State *s){
     ownerTreePiece = owner;
     state = s;
-    currentBucket = bucket;
   }
 
-  Node<ForceData> *getCurrentBucket(){
-    return currentBucket;
+  const WalkContext &getContext() const { return ctx; }
+  void setContext(const WalkContext &c){
+    ctx = c;
+    if(c.group != NULL) bindSources(*c.group);
   }
 
-  void *getContext(){
-    return (void *) currentBucket;
-  }
-
-  void setContext(void *context){
-    currentBucket = (Node<ForceData> *) context;
-  }
-
-  // Defined here, not in Worker.cpp, so that the walk (Traversal_defs.h),
-  // instantiated for the final classes below, can inline them.
-  int work(Node<ForceData> *node){
+  uint64_t visit(Node<ForceData> *node, uint64_t mask){
     NodeType type = node->getType();
-    state->nodeEncountered(currentBucket->getKey(),node);
+    if(!keep[type]) return 0;
 
-    if(!keep[type]){
-      state->nodeDiscarded(currentBucket->getKey(),node);
-      return 0;
+    const bool apply = (type != Boundary || appliesUnopenedBoundary);
+    const Real mass = node->data.moments.totalMass;
+    const Vector3D<Real> &cm = node->data.moments.cm;
+    const WalkGroup &g = *ctx.group;
+
+    // openCriterionBucket for every bucket of the group at once, with the
+    // same arithmetic, so the same decisions: tolsq*|cm_node - cm_bucket|^2
+    // < rsq opens the node for that bucket.
+    const Real tolsq = globalParams.tolsq;
+    const Real rsq = node->data.moments.rsq;
+    uint64_t open = 0;
+#if defined(__AVX2__) && defined(__FMA__)
+    // Four buckets per compare, skipping fours with no bucket still walking.
+    // fma(dz,dz,fma(dy,dy,dx*dx)) is what GCC makes of the scalar
+    // dx*dx + dy*dy + dz*dz with FMA available, so the decisions are the
+    // same as openCriterionBucket's (checked: equal interaction counts).
+    const __m256d ncx = _mm256_set1_pd(cm.x), ncy = _mm256_set1_pd(cm.y), ncz = _mm256_set1_pd(cm.z);
+    const __m256d vtol = _mm256_set1_pd(tolsq), vrsq = _mm256_set1_pd(rsq);
+    for(int b = 0; b < g.numBuckets; b += 4){
+      if(((mask >> b) & 0xF) == 0) continue;
+      const __m256d dx = _mm256_sub_pd(ncx, _mm256_load_pd(g.cx + b));
+      const __m256d dy = _mm256_sub_pd(ncy, _mm256_load_pd(g.cy + b));
+      const __m256d dz = _mm256_sub_pd(ncz, _mm256_load_pd(g.cz + b));
+      __m256d drsq = _mm256_mul_pd(dx, dx);
+      drsq = _mm256_fmadd_pd(dy, dy, drsq);
+      drsq = _mm256_fmadd_pd(dz, dz, drsq);
+      const __m256d o = _mm256_cmp_pd(_mm256_mul_pd(vtol, drsq), vrsq, _CMP_LT_OQ);
+      open |= (uint64_t)_mm256_movemask_pd(o) << b;
     }
-
-    // basic opening criterion
-    bool open = openCriterionBucket(node,currentBucket);
-    state->incrOpenCriterion();
-    if(open){
-      state->nodeOpened(currentBucket->getKey(),node);
-      return 1;
+#else
+    for(uint64_t left = mask; left != 0; left &= left - 1){
+      const int b = __builtin_ctzll(left);
+      const Real dx = cm.x - g.cx[b];
+      const Real dy = cm.y - g.cy[b];
+      const Real dz = cm.z - g.cz[b];
+      const Real drsq = dx*dx + dy*dy + dz*dz;
+      if(tolsq*drsq < rsq) open |= (1ull << b);
     }
-
-    // Applied by the local traversal only; see appliesUnopenedBoundary.
-    if(type == Boundary && !appliesUnopenedBoundary){
-      state->nodeDiscarded(currentBucket->getKey(),node);
-      return 0;
-    }
-
-#ifdef CHECK_TRAVERSAL_MASS
-    traversalMass[currentBucket->getKey()] += node->data.moments.totalMass;
 #endif
-    int computed = nodeBucketForce(node,currentBucket);
-    state->nodeComputed(currentBucket,node->getKey());
-    state->incrPartNodeInteractions(currentBucket->getKey(),computed);
-    return 0;
-  }
+    open &= mask;
+    state->incrOpenCriterion(__builtin_popcountll(mask));
 
-  void work(ExternalParticle *particle){
+    if(apply){
+      for(uint64_t left = mask & ~open; left != 0; left &= left - 1){
+        const int b = __builtin_ctzll(left);
 #ifdef CHECK_TRAVERSAL_MASS
-    traversalMass[currentBucket->getKey()] += particle->mass;
+        traversalMass[g.buckets[b]->getKey()] += mass;
 #endif
-    int computed = partBucketForce(particle,currentBucket);
-    state->incrPartPartInteractions(currentBucket->getKey(),computed);
+        addSource(b,mass,cm);
+        state->incrPartNodeInteractions(0,g.np[b]);
+      }
+    }
+    return open;
   }
 
-  void bucketDone(Key k){
-    state->bucketComputed(currentBucket,k);
+  // A leaf's particles, reached (opened) by the buckets in mask. P is
+  // Particle for a local bucket and ExternalParticle for a fetched one: the
+  // array's own type, so that particles[i] steps by the right size.
+  template<class P>
+  void applyParticles(const P *particles, int np, uint64_t mask){
+    Node<ForceData> **buckets = ctx.group->buckets;
+    for(uint64_t left = mask; left != 0; left &= left - 1){
+      const int b = __builtin_ctzll(left);
+      Node<ForceData> *bucket = buckets[b];
+      for(int i = 0; i < np; i++){
+#ifdef CHECK_TRAVERSAL_MASS
+        traversalMass[bucket->getKey()] += particles[i].mass;
+#endif
+        addSource(b,particles[i].mass,particles[i].position);
+      }
+      state->incrPartPartInteractions(0,(CmiUInt8)np*bucket->getNumParticles());
+    }
   }
-  
+
   virtual void done() {}
 };
 

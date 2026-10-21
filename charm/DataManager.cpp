@@ -1161,7 +1161,7 @@ void DataManager::startTraversal(){
   }
 }
 
-void DataManager::requestParticles(Node<ForceData> *leaf, CutoffWorker<ForceData> *worker, State *state, Traversal<ForceData> *traversal){
+void DataManager::requestParticles(Node<ForceData> *leaf, TraversalWorker *worker, State *state, Traversal<ForceData> *traversal, const WalkContext &context){
   Key key = leaf->getKey();
   Request &request = particleRequestTable[key];
   if(!request.sent){
@@ -1187,7 +1187,7 @@ void DataManager::requestParticles(Node<ForceData> *leaf, CutoffWorker<ForceData
     RRDEBUG("(%d) REQUEST particles %lu from tp %d\n", 
             CkMyPe(), key, owner);
   }
-  request.requestors.push_back(Requestor(worker,state,traversal,worker->getContext()));
+  request.requestors.push_back(Requestor(worker,state,traversal,context));
   partReqs.incrDeliveries();
 }
 
@@ -1224,7 +1224,7 @@ void DataManager::requestParticles(RequestMsg *msg){
   delete msg;
 }
 
-void DataManager::requestNode(Node<ForceData> *leaf, CutoffWorker<ForceData> *worker, State *state, Traversal<ForceData> *traversal){
+void DataManager::requestNode(Node<ForceData> *leaf, TraversalWorker *worker, State *state, Traversal<ForceData> *traversal, const WalkContext &context){
   Key key = leaf->getKey();
   Request &request = nodeRequestTable[key];
   if(!request.sent){
@@ -1253,7 +1253,7 @@ void DataManager::requestNode(Node<ForceData> *leaf, CutoffWorker<ForceData> *wo
     request.sent = true;
     request.parent = leaf;
   }
-  request.requestors.push_back(Requestor(worker,state,traversal,worker->getContext()));
+  request.requestors.push_back(Requestor(worker,state,traversal,context));
   nodeReqs.incrDeliveries();
 }
 
@@ -1390,8 +1390,8 @@ void DataManager::traversalsDone()
 void DataManager::finishIteration(){
   // Apply the sources still waiting in this PE's interaction list
   // (gravity.h) before anything reads the forces.
-  flushSources();
-  sourceList.bucket = NULL;
+  flushAllSources();
+  for(int b = 0; b < WALK_GROUP_MAX_BUCKETS; b++) sources.bucket[b] = NULL;
   timers.stop(PHASE_TRAVERSAL);
 
 #ifdef CHECK_TRAVERSAL_MASS

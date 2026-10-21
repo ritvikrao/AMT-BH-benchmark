@@ -39,6 +39,8 @@ struct Parameters {
   int ppb;
 
   int yieldPeriod;
+  // Most particles in a walk group (WalkGroup.h); 1 walks each bucket alone.
+  int walkGroupParticles;
   int cacheLineSize;
 
   // -balance=count (default) cuts the decomposition by particle count;
@@ -78,6 +80,7 @@ struct Parameters {
     p | ppc;
     p | ppb;
     p | yieldPeriod;
+    p | walkGroupParticles;
     p | theta;
     p | cacheLineSize;
     p | balanceByCost;

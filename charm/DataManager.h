@@ -245,8 +245,8 @@ class DataManager : public CBase_DataManager {
 #endif
 
   // called by tree piece that is making a request
-  void requestNode(Node<ForceData> *leaf, CutoffWorker<ForceData> *worker, State *state, Traversal<ForceData> *callbackTraversal);
-  void requestParticles(Node<ForceData> *leaf, CutoffWorker<ForceData> *worker, State *state, Traversal<ForceData> *callbackTraversal);
+  void requestNode(Node<ForceData> *leaf, TraversalWorker *worker, State *state, Traversal<ForceData> *callbackTraversal, const WalkContext &context);
+  void requestParticles(Node<ForceData> *leaf, TraversalWorker *worker, State *state, Traversal<ForceData> *callbackTraversal, const WalkContext &context);
 
   // called by tree piece that is forwarding a remote request
   void requestNode(RequestMsg *msg);

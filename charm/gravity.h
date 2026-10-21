@@ -6,6 +6,7 @@
 #include "Vector3D.h"
 #include "defines.h"
 #include "Parameters.h"
+#include "WalkGroup.h"
 
 extern Parameters globalParams;
 
@@ -18,41 +19,45 @@ openCriterionBucket(Node<ForceData> *node,
   return (globalParams.tolsq*drsq < node->data.moments.rsq);
 }
 
-// Interaction list. The walk does not apply a source (an unopened node's
-// monopole, or a particle) to its bucket on the spot: it appends the source's
-// mass and position here, and the bucket's particles are then run against the
-// whole list at once (flushSources). That kernel keeps each target's sums in
-// registers and vectorises over sources; applying sources one at a time
-// stored every target's acceleration and potential back to memory after each
-// interaction, and the next source had to wait for those stores.
+// Interaction lists. The walk does not apply a source (an unopened node's
+// monopole, or a particle) to a bucket on the spot: it appends the source's
+// mass and position to the bucket's list, and the bucket's particles are then
+// run against the whole list at once (flushSources). That kernel keeps each
+// target's sums in registers and vectorises over sources; applying sources
+// one at a time stored every target's acceleration and potential back to
+// memory after each interaction, and the next source had to wait for those
+// stores.
 //
-// One list per PE: a PE runs all of its TreePieces' walks on one thread, and
-// the list belongs to one bucket at a time. It is flushed when a source for
-// another bucket arrives, when it is full, and by flushSources() before the
-// PE uses the forces (DataManager::traversalsDone), so no source is applied
-// late or to the wrong bucket.
-struct SourceList {
-  static const int CAP = 256;
-  alignas(64) Real x[CAP];
-  alignas(64) Real y[CAP];
-  alignas(64) Real z[CAP];
-  alignas(64) Real m[CAP];
-  int n;
-  Node<ForceData> *bucket;
+// One list per bucket of a walk group (WalkGroup.h), per PE: a PE runs all of
+// its TreePieces' walks on one thread, one group at a time. A walk binds the
+// lists to its group's buckets (bindSources) and ends with flushAllSources() -- after each group (TreePiece::doLocalGravity,
+// doRemoteGravity) and after each walk resumed by a fetch (Request) -- so the
+// lists are empty between entry methods, and DataManager::finishIteration
+// flushes once more before the PE reads the forces.
+struct SourceLists {
+  static const int CAP = 128;
+  // Per slot: how many sources wait, and the bucket they are for. Kept apart
+  // from the coordinates so that an append reads one cache line.
+  alignas(64) int n[WALK_GROUP_MAX_BUCKETS];
+  Node<ForceData> *bucket[WALK_GROUP_MAX_BUCKETS];
+  alignas(64) Real x[WALK_GROUP_MAX_BUCKETS][CAP];
+  alignas(64) Real y[WALK_GROUP_MAX_BUCKETS][CAP];
+  alignas(64) Real z[WALK_GROUP_MAX_BUCKETS][CAP];
+  alignas(64) Real m[WALK_GROUP_MAX_BUCKETS][CAP];
 };
-extern thread_local SourceList sourceList;
+extern thread_local SourceLists sources;
 
-inline void flushSources(){
-  SourceList &s = sourceList;
-  const int n = s.n;
+inline void flushSources(int slot){
+  SourceLists &s = sources;
+  const int n = s.n[slot];
   if(n == 0) return;
-  Particle *particles = s.bucket->getParticles();
-  const int np = s.bucket->getNumParticles();
+  Particle *particles = s.bucket[slot]->getParticles();
+  const int np = s.bucket[slot]->getNumParticles();
   const Real epssq = globalParams.epssq;
-  const Real *__restrict sx = s.x;
-  const Real *__restrict sy = s.y;
-  const Real *__restrict sz = s.z;
-  const Real *__restrict sm = s.m;
+  const Real *__restrict sx = s.x[slot];
+  const Real *__restrict sy = s.y[slot];
+  const Real *__restrict sz = s.z[slot];
+  const Real *__restrict sm = s.m[slot];
 
   for(int i = 0; i < np; i++){
     Particle &p = particles[i];
@@ -87,34 +92,30 @@ inline void flushSources(){
     p.acceleration.z += az;
     p.cost += n;
   }
-  s.n = 0;
+  s.n[slot] = 0;
 }
 
-inline void addSource(Node<ForceData> *bucket, Real mass, const Vector3D<Real> &position){
-  SourceList &s = sourceList;
-  if(s.bucket != bucket){
-    flushSources();
-    s.bucket = bucket;
+inline void flushAllSources(){
+  for(int b = 0; b < WALK_GROUP_MAX_BUCKETS; b++) flushSources(b);
+}
+
+// Slot b belongs to the group's bucket b from here until the walk's closing
+// flushAllSources(). The lists are empty whenever a walk starts.
+inline void bindSources(const WalkGroup &g){
+  for(int b = 0; b < g.numBuckets; b++){
+    CkAssert(sources.n[b] == 0);
+    sources.bucket[b] = g.buckets[b];
   }
-  const int k = s.n;
-  s.x[k] = position.x;
-  s.y[k] = position.y;
-  s.z[k] = position.z;
-  s.m[k] = mass;
-  if((s.n = k + 1) == SourceList::CAP) flushSources();
 }
 
-inline
-int nodeBucketForce(Node<ForceData> *node, 
-		    Node<ForceData> *req){
-  addSource(req,node->data.moments.totalMass,node->data.moments.cm);
-  return req->getNumParticles();
-}
-
-inline int partBucketForce(ExternalParticle *part, 
-			   Node<ForceData> *req){ 
-  addSource(req,part->mass,part->position);
-  return req->getNumParticles();
+inline void addSource(int slot, Real mass, const Vector3D<Real> &position){
+  SourceLists &s = sources;
+  const int k = s.n[slot];
+  s.x[slot][k] = position.x;
+  s.y[slot][k] = position.y;
+  s.z[slot][k] = position.z;
+  s.m[slot][k] = mass;
+  if((s.n[slot] = k + 1) == SourceLists::CAP) flushSources(slot);
 }
 
 #endif

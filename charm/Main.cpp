@@ -116,6 +116,9 @@ void Main::setParameters(CkArgMsg *m){
   globalParams.yieldPeriod = params.getiparam("yield", DEFAULT_YIELD_PERIOD, table);
   CkPrintf("yieldPeriod: %d\n", globalParams.yieldPeriod);
 
+  globalParams.walkGroupParticles = params.getiparam("walkgroup", DEFAULT_WALK_GROUP_PARTICLES, table);
+  CkPrintf("walkgroup: %d\n", globalParams.walkGroupParticles);
+
   string balance = params.getsparam("balance", table);
   if(balance.empty()) balance = "count";
   if(balance != "cost" && balance != "count"){
