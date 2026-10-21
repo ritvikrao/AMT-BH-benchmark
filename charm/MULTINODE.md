@@ -82,6 +82,7 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
 | 2026-10-16 | Stampede3 skx, 1/2/4 nodes | **Pinned build**, 1ff2080 and 39c5d41 against 39c5d41 on `~/charm_reconverse`: each identical to its own 1x8 on 1x2x23, 2x2x23, 4x2x23, 4x4x11 | 1ff2080, 39c5d41 | 3606099 (idev; ended in NODE_FAIL, see below) |
 | 2026-10-16 | Stampede3 skx, 1/2/4 nodes | **Traversal** (`chunkdepth` 4, leaf 24): 8M energy series identical to all printed digits on 1x2x23, 2x2x23 and 4x2x23, with `-balance` count and cost; with `-b=10 -chunkdepth=3` the binary reproduces 1ff2080 exactly; leaf 24 force error vs direct sum 4.77e-3 median (leaf 10: 5.11e-3) | 39c5d41 | 3605876, 3605917 (idev) |
 | 2026-10-16 | Stampede3 skx, 1/2/4 nodes | **3b** (moments skeleton): old and new binaries on 1x8, 1x2x23, 2x2x23, 4x2x23 and 4x4x11 (184 PEs). Energy series identical to all printed digits; same layout old vs new, forces max 3.8e-14; new 1x8 vs 4 nodes 7.3e-14 | 1ff2080 | 3605652 (idev) |
+| 2026-10-15 | Delta, 8 nodes | **first 8-node Delta run**, 64 processes x 15 = 960 PEs, before 3a: 2M energy series identical to all printed digits to 1x8 and 4x8x15, 0 spikes. The LCI bootstrap holds at 64 processes. Forces not compared (the 1x8 dump was not kept) | 4b245f1 (barnes-3e9fe70) | 22904246 |
 | 2026-10-15 | Delta, 4 nodes | **3a** (DM-to-DM exchange): 1x8 vs 4x8x15 energy identical to all digits, forces 7e-14 | bbce8b0 | 22918357 |
 | 2026-10-14 | Delta, 1/2/4 nodes | **correctness matrix**: 1x8, 1x8x15, 2x2x15, 2x8x15, 4x8x15 (480 PEs). Energy series identical to all printed digits; forces at step 9 agree per particle to 7e-14; 0 spikes; E_T drift 3.2e-6 over 10 steps | 89d55a5 | 22904192 |
 | 2026-10-14 | Delta, 2 nodes (cn044, cn130) | **first 2-node run**: 2M, 2x8x15 = 240 PEs, graceful, 0.383 s/step (1 node: 0.399). E_P deviates 6.6e-3 from 1 node, 6 spikes in 10 steps: the Step 1 bug, not yet fixed | 8d1b285 binary | 22903631 |
@@ -178,6 +179,11 @@ are maxima over PEs, so they do not add up to the step time.
 | 8M | 1 | 1.496 | 0.466 | 0.472 | 0.798 |
 | 8M | 2 | 1.205 | 0.439 | 0.543 | 0.432 |
 | 8M | 4 | 1.593 | 0.606 | 1.104 | 0.251 |
+| 2M | 8 | 0.497 | 0.189 | 0.297 | 0.111 |
+| 8M | 8 | 1.524 | 0.664 | 1.129 | 0.156 |
+
+The 8-node rows are from job 22904246, the same binary, run a day later
+([results/baseline-8node-2026-10-15.csv](results/baseline-8node-2026-10-15.csv)).
 
 - **Traversal scales:** 3.2x from 1 to 4 nodes at 8M.
 - **Tree build grows with node count**, and is the largest phase at
@@ -185,6 +191,8 @@ are maxima over PEs, so they do not add up to the step time.
   and requests their moments.
 - **Decomposition grows too.** That includes the P x T particle exchange,
   which 3a removes; 22918357 measures how much of it 3a recovers.
+- **8 nodes confirm it:** 8M is no faster than on 4 nodes, and tree build
+  (1.13 s) is three quarters of the step, while traversal keeps scaling (0.156 s).
 - Past 2 nodes the step gets slower. **3b is not optional for
   scaling**, so it is no longer only a deferral candidate.
 
