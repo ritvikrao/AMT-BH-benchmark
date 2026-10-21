@@ -50,10 +50,32 @@ buckets / 64 particles, each bucket still tested at every node (identical
 interactions). 400k, 1 PE: leaf 10 1.248 -> 1.097 s/step, leaf 1 7.99 ->
 4.82; 4M on 1x120 0.350 -> 0.311.
 
+Then (03c4a2e) the packet walk, -walk=packet (default for leaf <= 4 via
+-walk=auto): the group's particles are SIMD lanes, accepted nodes are applied
+to them during the walk, as in HPX and Julia-Dagger; the opening test stays
+per bucket, so interactions are identical to the lists.
+  400k, 1 PE, traversal s/step, list / packet:
+    leaf 1 4.14/3.18, 2 2.21/1.90, 3 1.59/1.43, 4 1.31/1.23, 10 0.862/0.852
+  4M: 1x64 leaf 1 1.942/1.626, leaf 10 0.463/0.463;
+      1x120 leaf 10 0.320/0.325; 8x15 leaf 10 0.314/0.333
+
+Why leaf 1 is still behind HPX (400k, one force evaluation, both counted;
+HPX instrumented in a scratch copy, /work/nvme/mzu/rao1/bh-others/hpx-count-src):
+                       HPX (16 lanes, octree)   Charm++ packet (32 lanes, binary tree)
+  node visits          33M                      69M
+  per-body tests       325M                     800M
+  interactions         263M                     242M
+  time per visit       27 ns                    47 ns
+Same interactions, 2.5x the opening tests: our tree is binary, three levels
+of half-cells per octree level, each tested on the way down. An octree build
+(BRANCH_FACTOR 8) aborts in the decomposition, and would change the
+interactions (the tree is part of the opening criterion). At 64 PEs, leaf 1
+(4M): traversal 1.16 s, waiting 0.64 s of a 1.59 s step on PE 0.
+
 Still open, in order of size:
-  - leaf 1: 5.6x behind HPX at 64 cores. 770M opening tests per step at
-    400k (1924 per particle) at ~5 ns each; HPX and Julia test 16 bodies per
-    SIMD packet and apply accepted nodes to the packet directly.
+  - leaf 1: 5.0x behind HPX at 64 cores (1.626 vs 0.322). The binary tree
+    makes 2.5x HPX's opening tests (above); at 64 PEs waiting is 40% of
+    the step.
   - load imbalance at 64+ PEs (above); -balance=cost did not help (tested
     before the group walk).
   - decomposition every step: 30x HPX's on one core; HPX repartitions every
