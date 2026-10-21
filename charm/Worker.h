@@ -5,6 +5,8 @@
 #include "util.h"
 #include "MultipoleMoments.h"
 #include "Descriptor.h"
+#include "State.h"
+#include "gravity.h"
 
 #include <map>
 using namespace std;
@@ -101,9 +103,22 @@ class TraversalWorker : public CutoffWorker<ForceData> {
   
   Node<ForceData> *currentBucket;
 
-  TraversalWorker() : 
+  // Which node types this walk handles (indexed by NodeType), and whether it
+  // applies an unopened Boundary node. Both traversals keep Boundary nodes --
+  // a Boundary node is the shared spine between the local and the remote part
+  // of the tree, so each has to be able to walk down through it. When such a
+  // node is *not* opened, though, its multipole stands for its whole subtree,
+  // local and remote alike, and only one of the two may apply it: the local
+  // traversal does. Data rather than virtual functions, so that work() --
+  // called for every node the walk meets -- makes no calls of its own.
+  const bool *keep;
+  bool appliesUnopenedBoundary;
+
+  TraversalWorker(const bool *k, bool unopenedBoundary) : 
     ownerTreePiece(NULL),
-    currentBucket(NULL)
+    currentBucket(NULL),
+    keep(k),
+    appliesUnopenedBoundary(unopenedBoundary)
   {
   }
 
@@ -127,37 +142,66 @@ class TraversalWorker : public CutoffWorker<ForceData> {
     currentBucket = (Node<ForceData> *) context;
   }
 
-  int work(Node<ForceData> *node);
-  void work(ExternalParticle *particle);
-  void bucketDone(Key k);
+  // Defined here, not in Worker.cpp, so that the walk (Traversal_defs.h),
+  // instantiated for the final classes below, can inline them.
+  int work(Node<ForceData> *node){
+    NodeType type = node->getType();
+    state->nodeEncountered(currentBucket->getKey(),node);
+
+    if(!keep[type]){
+      state->nodeDiscarded(currentBucket->getKey(),node);
+      return 0;
+    }
+
+    // basic opening criterion
+    bool open = openCriterionBucket(node,currentBucket);
+    state->incrOpenCriterion();
+    if(open){
+      state->nodeOpened(currentBucket->getKey(),node);
+      return 1;
+    }
+
+    // Applied by the local traversal only; see appliesUnopenedBoundary.
+    if(type == Boundary && !appliesUnopenedBoundary){
+      state->nodeDiscarded(currentBucket->getKey(),node);
+      return 0;
+    }
+
+#ifdef CHECK_TRAVERSAL_MASS
+    traversalMass[currentBucket->getKey()] += node->data.moments.totalMass;
+#endif
+    int computed = nodeBucketForce(node,currentBucket);
+    state->nodeComputed(currentBucket,node->getKey());
+    state->incrPartNodeInteractions(currentBucket->getKey(),computed);
+    return 0;
+  }
+
+  void work(ExternalParticle *particle){
+#ifdef CHECK_TRAVERSAL_MASS
+    traversalMass[currentBucket->getKey()] += particle->mass;
+#endif
+    int computed = partBucketForce(particle,currentBucket);
+    state->incrPartPartInteractions(currentBucket->getKey(),computed);
+  }
+
+  void bucketDone(Key k){
+    state->bucketComputed(currentBucket,k);
+  }
   
   virtual void done() {}
-  virtual bool getKeep(NodeType type) = 0;
-
-  // Both traversals keep Boundary nodes -- a Boundary node is the shared spine
-  // between the local and the remote part of the tree, so each has to be able
-  // to walk down through it. When such a node is *not* opened, though, its
-  // multipole stands for its whole subtree, local and remote alike, and only
-  // one of the two may apply it. The local traversal does; see
-  // TraversalWorker::work.
-  virtual bool computesUnopenedBoundary() const = 0;
 };
 
-class LocalTraversalWorker : public TraversalWorker {
-  static const bool keep[];
+class LocalTraversalWorker final : public TraversalWorker {
+  static const bool keepTable[];
   public:
-  LocalTraversalWorker() : TraversalWorker() {}
-  bool getKeep(NodeType type);
-  bool computesUnopenedBoundary() const { return true; }
+  LocalTraversalWorker() : TraversalWorker(keepTable, true) {}
 };
 
-class RemoteTraversalWorker : public TraversalWorker {
-  static const bool keep[];
+class RemoteTraversalWorker final : public TraversalWorker {
+  static const bool keepTable[];
   public:
-  RemoteTraversalWorker() : TraversalWorker() {}
+  RemoteTraversalWorker() : TraversalWorker(keepTable, false) {}
   void done();
-  bool getKeep(NodeType type);
-  bool computesUnopenedBoundary() const { return false; }
 };
 
 class TreeSizeWorker : public CutoffWorker<ForceData> {

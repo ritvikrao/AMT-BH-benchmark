@@ -61,11 +61,14 @@ struct State {
     currentBucketPtr = bucketPtr;
   }
 
-  void nodeEncountered(Key bucketKey, Node<ForceData> *node);
-  void nodeOpened(Key bucketKey, Node<ForceData> *node);
-  void nodeDiscarded(Key bucketKey, Node<ForceData> *node);
-  void nodeComputed(Node<ForceData> *bucket, Key nodeKey);
-  void bucketComputed(Node<ForceData> *bucket, Key k);
+  // Hooks the walk calls for every node it meets. They do nothing, and are
+  // defined here so that the compiler can drop the calls: out of line, they
+  // cost several calls per node visited.
+  void nodeEncountered(Key bucketKey, Node<ForceData> *node) {}
+  void nodeOpened(Key bucketKey, Node<ForceData> *node) {}
+  void nodeDiscarded(Key bucketKey, Node<ForceData> *node) {}
+  void nodeComputed(Node<ForceData> *bucket, Key nodeKey) {}
+  void bucketComputed(Node<ForceData> *bucket, Key k) {}
 
   void finishedIteration(){
 #ifdef STATISTICS

@@ -6,6 +6,8 @@
 
 extern CProxy_TreePiece treePieceProxy;
 
+thread_local SourceList sourceList;
+
 int ParticleFlushWorker::work(Node<NodeDescriptor> *node){
   if(node->getNumChildren() > 0) return 1;
 
@@ -139,70 +141,12 @@ void MomentsWorker::setTypeFromChildren(Node<ForceData> *node){
 thread_local std::map<Key,Real> traversalMass;
 #endif
 
-int TraversalWorker::work(Node<ForceData> *node){
-  NodeType type = node->getType();
-  state->nodeEncountered(currentBucket->getKey(),node);
-  bool keep = getKeep(type);
-
-  if(!keep){
-    state->nodeDiscarded(currentBucket->getKey(),node);
-    return 0;
-  }
-
-  // basic opening criterion
-  bool open = openCriterionBucket(node,currentBucket);
-  state->incrOpenCriterion();
-  if(open){
-    state->nodeOpened(currentBucket->getKey(),node);
-    return 1;
-  }
-
-  // A Boundary node is reached by both traversals, so without this its
-  // multipole -- which covers its remote subtree as well as its local one --
-  // would be applied to the bucket twice. It cannot simply be dropped from one
-  // keep table: both traversals still have to descend through Boundary nodes
-  // to reach their own leaves. Give the approximation to the local traversal
-  // and let the remote one walk past it.
-  if(type == Boundary && !computesUnopenedBoundary()){
-    state->nodeDiscarded(currentBucket->getKey(),node);
-    return 0;
-  }
-
-#ifdef CHECK_TRAVERSAL_MASS
-  traversalMass[currentBucket->getKey()] += node->data.moments.totalMass;
-#endif
-  int computed = nodeBucketForce(node,currentBucket);
-  state->nodeComputed(currentBucket,node->getKey());
-  state->incrPartNodeInteractions(currentBucket->getKey(),computed);
-  return 0;
-}
-
-void TraversalWorker::work(ExternalParticle *particle){
-#ifdef CHECK_TRAVERSAL_MASS
-  traversalMass[currentBucket->getKey()] += particle->mass;
-#endif
-  int computed = partBucketForce(particle,currentBucket);
-  state->incrPartPartInteractions(currentBucket->getKey(),computed);
-}
-
-void TraversalWorker::bucketDone(Key k){
-  state->bucketComputed(currentBucket,k);
-}
-
-bool LocalTraversalWorker::getKeep(NodeType type){
-  return keep[type];
-}
-
-bool RemoteTraversalWorker::getKeep(NodeType type){
-  return keep[type];
-}
-
 void RemoteTraversalWorker::done(){
   ownerTreePiece->remoteGravityDone();
 }
 
-const bool LocalTraversalWorker::keep[] = {false,true,true,false,true,false,false,false};
-const bool RemoteTraversalWorker::keep[] = {false,false,false,false,true,true,true,false};
+const bool LocalTraversalWorker::keepTable[] = {false,true,true,false,true,false,false,false};
+const bool RemoteTraversalWorker::keepTable[] = {false,false,false,false,true,true,true,false};
 
 int TreeSizeWorker::work(Node<ForceData> *node){
   int depth = node->getDepth();

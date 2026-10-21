@@ -16,7 +16,7 @@ class Traversal {
   // to request particles/nodes from
   DataManager *dm;
 
-  void processLeaf(Node<T> *node, CutoffWorker<T> *worker, State *state);
+  template<class W> void processLeaf(Node<T> *node, W *worker, State *state);
 
   public:
 
@@ -30,7 +30,11 @@ class Traversal {
   // all children are stored together but processed
   // separately
   void preorderTraversal(Node<T> *root, CutoffWorker<T> *worker);
-  void topDownTraversal(Node<T> *root, CutoffWorker<T> *worker, State *state);
+  // The gravity walk. W is the worker's static type: TreePiece passes its
+  // LocalTraversalWorker or RemoteTraversalWorker (final classes), so every
+  // per-node work() call is direct and inlined; Request, resuming a walk after
+  // a fetch, only has a CutoffWorker and calls through the vtable.
+  template<class W> void topDownTraversal(Node<T> *root, W *worker, State *state);
   void topDownTraversal_local(Node<T> *root, CutoffWorker<T> *worker);
   void postorderTraversal(Node<T> *root, CutoffWorker<T> *worker);
 };

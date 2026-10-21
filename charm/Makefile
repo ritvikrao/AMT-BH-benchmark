@@ -15,7 +15,11 @@ CHARMC   = $(CHARM_PATH)/bin/charmc
 # Other useful toggles: -DVERBOSE_TRAVERSAL -DCHECK_NUM_INTERACTIONS
 #                       -DPRINT_TREE -DDEBUG_TRAVERSALS -DVERBOSE_NODE_REFINE
 APP_FLAGS = -DSTATISTICS
-OPTS      = -O3 -g $(APP_FLAGS)
+# The force kernel (gravity.h) is written to vectorise; -march=native lets it
+# use the build host's vector units (AVX2 and FMA on Delta's EPYC 7763). Build
+# on the kind of node you run on, or set ARCH, e.g. ARCH=-march=znver3.
+ARCH     ?= -march=native
+OPTS      = -O3 -g -fopenmp-simd -fno-math-errno -fno-trapping-math $(ARCH) $(APP_FLAGS)
 
 # Charm++ tracing, off by default. The trace libraries instrument every entry
 # method, so a traced binary is not the one the benchmark should be timed on --
@@ -62,11 +66,12 @@ $(TARGET): $(OBJECTS) .tracemode
 .tracemode: FORCE
 	@[ -f $@ ] && [ "`cat $@`" = "$(TRACE)" ] || { echo "$(TRACE)" > $@; }
 
-# Likewise APP_FLAGS: the check builds (-DCHECK_TRAVERSAL_MASS, -DEP_DIAG, ...)
-# change every object, and without this a `make APP_FLAGS=...` after a plain
-# `make` finds everything up to date and quietly hands back the plain binary.
+# Likewise APP_FLAGS and ARCH: the check builds (-DCHECK_TRAVERSAL_MASS,
+# -DEP_DIAG, ...) change every object, and without this a `make APP_FLAGS=...`
+# after a plain `make` finds everything up to date and quietly hands back the
+# plain binary.
 .appflags: FORCE
-	@[ -f $@ ] && [ "`cat $@`" = "$(APP_FLAGS)" ] || { echo "$(APP_FLAGS)" > $@; }
+	@[ -f $@ ] && [ "`cat $@`" = "$(APP_FLAGS) $(ARCH)" ] || { echo "$(APP_FLAGS) $(ARCH)" > $@; }
 
 FORCE:
 

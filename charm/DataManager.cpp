@@ -5,6 +5,7 @@
 #include "Parameters.h"
 
 #include "Worker.h"
+#include "gravity.h"
 #include "TreePiece.h"
 
 #include "Request.h"
@@ -1387,6 +1388,10 @@ void DataManager::traversalsDone()
 }
 
 void DataManager::finishIteration(){
+  // Apply the sources still waiting in this PE's interaction list
+  // (gravity.h) before anything reads the forces.
+  flushSources();
+  sourceList.bucket = NULL;
   timers.stop(PHASE_TRAVERSAL);
 
 #ifdef CHECK_TRAVERSAL_MASS

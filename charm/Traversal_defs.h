@@ -54,21 +54,27 @@ void Traversal<T>::topDownTraversal_local(Node<T> *root, CutoffWorker<T> *worker
 }
 
 template<typename T>
-void Traversal<T>::topDownTraversal(Node<T> *root, CutoffWorker<T> *worker, State *state){
-  stack<Node<T>*> ptrStk;
+template<class W>
+void Traversal<T>::topDownTraversal(Node<T> *root, W *worker, State *state){
   int ret = worker->work(root);
   if(ret == 0) return;
 
-  ptrStk.push(root); 
+  // An explicit stack in a fixed array: a std::stack (a deque) costs a call
+  // and a branch per push and pop, and this loop runs for every node the walk
+  // meets. Keys have 64 bits, so the tree is at most 64 levels deep, and the
+  // walk holds at most BRANCH_FACTOR - 1 waiting siblings per level.
+  const int STACK_MAX = 64*BRANCH_FACTOR + 1;
+  Node<T> *ptrStk[STACK_MAX];
+  int top = 0;
+  ptrStk[top++] = root;
 
   Node<T> *tmp[BRANCH_FACTOR];
   int numChildrenToExpand;
 
-  while(!ptrStk.empty()){
-    Node<T> *t_parent = ptrStk.top();
+  while(top > 0){
+    Node<T> *t_parent = ptrStk[--top];
     Node<T> *t_children = t_parent->getChildren();
     int t_numChildren = t_parent->getNumChildren();
-    ptrStk.pop();
 
     numChildrenToExpand = 0;
     if(t_numChildren == 0){
@@ -84,14 +90,16 @@ void Traversal<T>::topDownTraversal(Node<T> *root, CutoffWorker<T> *worker, Stat
         numChildrenToExpand++;
       }
     }
+    CkAssert(top + numChildrenToExpand <= STACK_MAX);
     for(int i = numChildrenToExpand-1; i >= 0; i--){
-      ptrStk.push(tmp[i]);
+      ptrStk[top++] = tmp[i];
     }
   }
 }
 
 template<typename T>
-void Traversal<T>::processLeaf(Node<T> *leaf, CutoffWorker<T> *worker, State *state){
+template<class W>
+void Traversal<T>::processLeaf(Node<T> *leaf, W *worker, State *state){
   NodeType type = leaf->getType();
 
   CkAssert(type != Internal);
