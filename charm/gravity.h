@@ -28,13 +28,22 @@ void grav(Particle *pstart, Particle *pend, Real mass, const Vector3D<Real> &pos
   for(Particle *p = pstart; p != pend; p++){
     dr = position - p->position;
     drsq = dr.lengthSquared();
+    p->cost += 1.0;
+    // A particle meets itself at exactly zero distance: pairwise in its own
+    // bucket, or as the monopole of a one-particle bucket (whose centre of
+    // mass is its position). Eq. 12 sums over j != i, so skip it. Adding
+    // -m/eps here and subtracting it after the traversal, as this code did
+    // until 2026-10, cancels catastrophically at small eps: at eps = 1e-11 a
+    // heavy particle's m/eps is so large that every other contribution to its
+    // potential rounds away, in an order that depends on the layout. At
+    // eps = 0 it was m/0. The acceleration is unchanged: the term was mor3*0.
+    if(drsq == 0.0) continue;
     drsq += globalParams.epssq;
     drabs = sqrt((double) drsq);
     phii = mass/drabs;
     p->potential -= phii;
     mor3 = phii/drsq;
     p->acceleration += mor3*dr;
-    p->cost += 1.0;
   }
 }
 

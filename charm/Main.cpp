@@ -94,7 +94,7 @@ void Main::setParameters(CkArgMsg *m){
   globalParams.dthf = globalParams.dtime/2.0;
 
   globalParams.epssq = params.getrparam("eps", DEFAULT_EPS, table);
-  CkPrintf("eps: %f\n", globalParams.epssq);
+  CkPrintf("eps: %g\n", globalParams.epssq);
   globalParams.epssq = globalParams.epssq*globalParams.epssq;
 
   globalParams.tolsq = globalParams.theta;

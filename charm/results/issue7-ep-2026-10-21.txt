@@ -1,0 +1,54 @@
+Issue #7 (diehlpkpapers/AMT-BH-benchmark): E_P positive and ~500x too large
+from step 1 on, at softening eps = 1e-11. Delta, one node, cpu-interactive
+job 23105308 (cn111), 2026-10-21.
+
+Input: DataGenerator 15afd52 examples/collision_three_galaxies.json, bodies
+split 52/32/16 % as in the issue (400k and 4M), masses scaled by
+G_data/G = 4.4986e-15/1.488185170503113e-34 = 3.0229e19. Flags as in the
+issue: -theta=0.5 -b=10 -ppc=2000 -G=1.488185170503113e-34
+-dtime=0.0416667 -eps=1e-11, one process.
+Binaries: upstream main 2563694; charm-multinode 5105980 (before);
+the self-term change (after).
+
+== 1. upstream main reproduces the report (4M, 4 PEs)
+  step 0 E_P -2.822962506e+20
+  step 1 E_P +8.109324964e+22
+  step 2 E_P +8.109470287e+22
+  step 3 E_P +8.108760510e+22
+main + a count of particles left at potential 0 after the traversal:
+  step 1: 89941 of 4000000 untouched; step 2: 89943; step 3: 89942
+These are particles whose TreePiece the traversal skipped (MULTINODE.md,
+Step 1; fixed in 77a8a5a, not upstream). Each adds +G m^2/(2 eps) through the
+self-term correction, which at eps = 1e-11 is ~7e17 per body: 9e4 bodies
+give the +8.1e22. With eps = 0.05 the same fault showed as spikes of ~4e-3.
+
+== 2. charm-multinode before the change: no untouched particles, but E_P
+depends on the layout (4M, step 0)
+  4 PEs  -2.822962506e+20   (and a jump of 7.7e-5 at step 3)
+  16 PEs -2.827564934e+20
+  64 PEs -2.827646634e+20
+The kernel added each particle's self term -m/eps and kickDriftKick
+subtracted it again. A galaxy's central black hole has ~10x the mass of its
+disk; its m/eps is ~6e38 (kernel units, G factored out), with an ulp of
+~7e22, above every single contribution from another body (~1e20). Those round
+away in an order that depends on the layout. Accelerations are not affected.
+With eps = 0 the self term is m/0: "NaN accel detected" at step 0.
+
+== 3. after: the kernel skips dr == 0 (gravity.h)
+4M, E_P identical to all printed digits on 4, 16 and 64 PEs:
+  step 0 E_P -2.841949354e+20   E_T -1.413381555e+20
+  step 3 E_P -2.841945141e+20
+  step 7 E_P -2.841943804e+20   E_T -1.413375745e+20  (drift 4.2e-6)
+400k, leaf 1, identical on 4, 16 and 64 PEs (-2.840367486e+18 at step 0).
+eps = 0 runs (400k, 16 PEs, 4 steps; E_P -2.840376027e+18 at step 0).
+
+Old vs new binary, same layout:
+  400k galaxies step 0: |da|/|a| median 0, max 4.1e-15; dphi/phi median
+    1.1e-10, max 7.6e-4 (the cancellation, now gone)
+  2M Plummer (-eps=0.1, 64 PEs, 10 steps): energy series identical to all
+    printed digits; forces at step 9 max 1.4e-14
+
+Against the direct sum (tools/direct_sum, 400k, step 0, theta 0.5, leaf 10):
+  E_P tree -2.8403760274e+18, exact -2.8449992337e+18, rel 1.6e-3
+  dphi/phi median 4.1e-4, p99 2.2e-3, max 6.0e-3
+That is tree approximation at theta 0.5 (DIFFERENCES.md #1), not this bug.

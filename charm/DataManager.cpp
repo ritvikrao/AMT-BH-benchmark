@@ -1400,11 +1400,11 @@ void DataManager::finishIteration(){
   CkAssert(nodeReqs.test());
   CkAssert(partReqs.test());
 
-  // Every particle in a traversed bucket picks up at least its own softened
-  // self-term, so a potential of exactly zero means no bucket held it -- its
+  // Every particle in a traversed bucket picks up a negative term from every
+  // other mass, so a potential of exactly zero means no bucket held it -- its
   // force is missing, and so is its mass from everyone else's. That was the
   // E_P excursion bug (MULTINODE.md, Step 1). One pass over local particles.
-  if(globalParams.epssq > 0.0){
+  {
     int untouched = 0;
     for(int i = 0; i < myNumParticles; i++)
       if(myParticles[i].potential == 0.0) untouched++;
@@ -1775,16 +1775,14 @@ void DataManager::dumpForces(){
     CkAbort("dumpForces: open failed\n");
   }
   const Real G = globalParams.G;
-  const Real eps = sqrt(globalParams.epssq);
   for(int i = 0; i < myNumParticles; i++){
     const Particle &p = myParticles[i];
-    const Real selfPotential = (eps > 0.0) ? -p.mass/eps : 0.0;
     struct { int64_t id; double v[8]; } rec;
     rec.id = p.id;
     rec.v[0] = p.position.x; rec.v[1] = p.position.y; rec.v[2] = p.position.z;
     rec.v[3] = p.mass;
     rec.v[4] = G*p.acceleration.x; rec.v[5] = G*p.acceleration.y; rec.v[6] = G*p.acceleration.z;
-    rec.v[7] = G*(p.potential - selfPotential);
+    rec.v[7] = G*p.potential;
     if(fwrite(&rec, sizeof(rec), 1, f) != 1) CkAbort("dumpForces: write failed\n");
   }
   fclose(f);
@@ -1817,18 +1815,10 @@ void DataManager::kickDriftKick(OrientedBox<Real> &box, Real &kineticEnergy, Rea
   // Step 0 starts from the input's synchronised velocities: nothing to close.
   const Real dtClose = (iteration == 0) ? 0.0 : dthf;
 
-  // A bucket is always opened against itself (its own centre of mass sits at
-  // zero distance), so every particle picks up one particle-particle term
-  // against itself: -m_i/sqrt(0 + eps^2) = -m_i/eps. Softening keeps that
-  // finite rather than infinite, so it silently biases E_P by -sum_i m_i^2/eps
-  // instead of blowing up. Whitepaper Eq. 12 sums over i<j only, so it is
-  // removed here. The acceleration needs no such correction: its self term is
-  // mor3*dr with dr == 0, which is exactly zero.
-  const Real eps = sqrt(globalParams.epssq);
-
+  // The kernel skips each particle's term against itself (gravity.h), so the
+  // potential already excludes j == i, as whitepaper Eq. 12 does.
   for(Particle *p = pstart; p != pend; p++){
-    const Real selfPotential = (eps > 0.0) ? -p->mass/eps : 0.0;
-    const Real phi = G*(p->potential - selfPotential);
+    const Real phi = G*p->potential;
     const Vector3D<Real> accel = G*p->acceleration;
 
     // phi_i = -sum_{j != i} m_j / r_ij, so sum_i m_i * phi_i visits every pair

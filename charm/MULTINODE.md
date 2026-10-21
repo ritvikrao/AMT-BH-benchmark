@@ -51,6 +51,10 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
       fixed a second layout dependence on the way (per-PE box padding, 23217cc).
       Tooling: `-dumpstep`, `tools/direct_sum.cpp`, `scripts/compare_forces.py`.
 - [x] **1b** Integrator is now leapfrog (a84e8cd): 86x smaller position error at dt=5000.
+- [x] **1c** Issue #7, E_P positive and huge at `eps=1e-11`: upstream `main`
+      still has the Step 1 bug, which tiny softening magnifies; our branch had
+      a second fault, the self-term cancellation. The kernel now skips the
+      self term, and `eps=0` works ([results](results/issue7-ep-2026-10-21.txt)).
 - [x] **2** Correctness matrix on 1, 2 and 4 nodes passes
       ([results](results/correctness-2026-10-14.txt)). `run.sh` takes `NODES`.
 - [x] **3a** Particle exchange: DM-to-DM with exact counts (bbce8b0). Verified on
@@ -82,6 +86,7 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
 | 2026-10-16 | Stampede3 skx, 1/2/4 nodes | **Pinned build**, 1ff2080 and 39c5d41 against 39c5d41 on `~/charm_reconverse`: each identical to its own 1x8 on 1x2x23, 2x2x23, 4x2x23, 4x4x11 | 1ff2080, 39c5d41 | 3606099 (idev; ended in NODE_FAIL, see below) |
 | 2026-10-16 | Stampede3 skx, 1/2/4 nodes | **Traversal** (`chunkdepth` 4, leaf 24): 8M energy series identical to all printed digits on 1x2x23, 2x2x23 and 4x2x23, with `-balance` count and cost; with `-b=10 -chunkdepth=3` the binary reproduces 1ff2080 exactly; leaf 24 force error vs direct sum 4.77e-3 median (leaf 10: 5.11e-3) | 39c5d41 | 3605876, 3605917 (idev) |
 | 2026-10-16 | Stampede3 skx, 1/2/4 nodes | **3b** (moments skeleton): old and new binaries on 1x8, 1x2x23, 2x2x23, 4x2x23 and 4x4x11 (184 PEs). Energy series identical to all printed digits; same layout old vs new, forces max 3.8e-14; new 1x8 vs 4 nodes 7.3e-14 | 1ff2080 | 3605652 (idev) |
+| 2026-10-21 | Delta, 1 node | **Self term skipped** (issue #7 input: three galaxies, `eps=1e-11`): 4M E_P identical to all printed digits on 4, 16, 64 PEs (before: spread 1.6e-3); `eps=0` runs; 2M Plummer energies unchanged, forces 1.4e-14 | this commit | 23105308 |
 | 2026-10-15 | Delta, 8 nodes | **first 8-node Delta run**, 64 processes x 15 = 960 PEs, before 3a: 2M energy series identical to all printed digits to 1x8 and 4x8x15, 0 spikes. The LCI bootstrap holds at 64 processes. Forces not compared (the 1x8 dump was not kept) | 4b245f1 (barnes-3e9fe70) | 22904246 |
 | 2026-10-15 | Delta, 4 nodes | **3a** (DM-to-DM exchange): 1x8 vs 4x8x15 energy identical to all digits, forces 7e-14 | bbce8b0 | 22918357 |
 | 2026-10-14 | Delta, 1/2/4 nodes | **correctness matrix**: 1x8, 1x8x15, 2x2x15, 2x8x15, 4x8x15 (480 PEs). Energy series identical to all printed digits; forces at step 9 agree per particle to 7e-14; 0 spikes; E_T drift 3.2e-6 over 10 steps | 89d55a5 | 22904192 |
@@ -165,6 +170,32 @@ step with a kick of dt/2 (the velocity is now synchronised at t_n, so E_K
 is measured here, at the same time as E_P); then open with a kick of dt/2 and
 drift dt. This changes every trajectory, so it is a commit of its own, made
 after the E_P fix so the two effects stay separable.
+
+## Step 1c: E_P at small softening (issue #7)
+
+The issue reports, for upstream `main` at `-eps=1e-11`, E_P correct at
+step 0 and positive and about 500 times too large from step 1. Reproduced
+on a three-galaxy input like the issue's
+([results](results/issue7-ep-2026-10-21.txt)). Two faults:
+
+1. **On `main`: the Step 1 bug.** About 90k of 4M particles get no
+   interactions at every step from 1. The kernel added each particle's
+   self term `-m/eps` and the integrator subtracted it again, so a particle
+   with no interactions came out at `+G m^2/(2 eps)`, about 7e17 each at this
+   softening. With `eps=0.05` the same fault had shown only as spikes of 4e-3.
+   Fixed on this branch since 77a8a5a.
+2. **On this branch: the cancellation itself.** The generator gives each galaxy a
+   central black hole of about 10 times the disk's mass. Its `m/eps` is so
+   large that every other body's contribution to its potential rounds
+   away, in an order that depends on the layout: E_P at step 0 differed by
+   1.6e-3 between 4 and 64 PEs. At `eps=0` the self term is `m/0`, and the
+   run stopped with NaN accelerations.
+
+**Fix:** `grav()` skips a source at exactly zero distance, which is the
+particle itself (pairwise in its own bucket, or as a one-particle bucket's
+monopole), and nothing subtracts a self term any more. The acceleration is
+unchanged (the term was `mor3*0`). E_P on 4M bodies is now identical to all
+printed digits on 4, 16 and 64 PEs, and `eps=0` runs.
 
 ## Baseline before Step 3 (job 22904250, barnes-3e9fe70)
 

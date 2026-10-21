@@ -131,7 +131,7 @@ E_P = −G Σ_{i<j} m_i m_j / r_ij, which is unsoftened and exact.
 | Julia | tree, unsoftened unless `--soften_potential` (`kernels.jl:215-226`) |
 | HPX | separate tree pass, softened (`hpx/src/energy.cpp:90`); exact with `--energy-exact` |
 | Itoyori | tree, softened, accumulated during the walk |
-| **Charm++** | tree, softened, accumulated during the walk; self-term removed |
+| **Charm++** | tree, softened, accumulated during the walk; the self term is skipped in the kernel, so `eps=0` works |
 
 `E_T` values therefore differ between implementations even on identical
 states. **Proposal:** report the tree-approximated, softened E_P every step,
