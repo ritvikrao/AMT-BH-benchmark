@@ -7,6 +7,7 @@
 extern CProxy_TreePiece treePieceProxy;
 
 thread_local SourceLists sources;
+thread_local Packet packet;
 
 int ParticleFlushWorker::work(Node<NodeDescriptor> *node){
   if(node->getNumChildren() > 0) return 1;

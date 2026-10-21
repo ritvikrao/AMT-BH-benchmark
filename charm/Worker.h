@@ -8,6 +8,7 @@
 #include "State.h"
 #include "gravity.h"
 #include "WalkGroup.h"
+#include "Packet.h"
 
 #include <map>
 #if defined(__AVX2__)
@@ -138,9 +139,18 @@ class TraversalWorker {
   }
 
   const WalkContext &getContext() const { return ctx; }
+  // Starts a walk (or resumes one after a fetch) for c's group: binds the
+  // interaction lists or loads the packet. endWalk() applies what the walk
+  // gathered; every walk ends with it.
   void setContext(const WalkContext &c){
     ctx = c;
-    if(c.group != NULL) bindSources(*c.group);
+    if(c.group == NULL) return;
+    if(c.group->packet) packetBind(*c.group);
+    else bindSources(*c.group);
+  }
+  void endWalk(){
+    if(ctx.group != NULL && ctx.group->packet) packetFlush();
+    else flushAllSources();
   }
 
   uint64_t visit(Node<ForceData> *node, uint64_t mask){
@@ -189,7 +199,19 @@ class TraversalWorker {
     open &= mask;
     state->incrOpenCriterion(__builtin_popcountll(mask));
 
-    if(apply){
+    if(apply && g.packet){
+      const uint64_t accepted = mask & ~open;
+      if(accepted != 0){
+#ifdef CHECK_TRAVERSAL_MASS
+        for(uint64_t left = accepted; left != 0; left &= left - 1)
+          traversalMass[g.buckets[__builtin_ctzll(left)]->getKey()] += mass;
+#endif
+        const uint64_t lanes = packetLanes(accepted);
+        packetApply(lanes,mass,cm);
+        state->incrPartNodeInteractions(0,__builtin_popcountll(lanes));
+      }
+    }
+    else if(apply){
       for(uint64_t left = mask & ~open; left != 0; left &= left - 1){
         const int b = __builtin_ctzll(left);
 #ifdef CHECK_TRAVERSAL_MASS
@@ -208,6 +230,17 @@ class TraversalWorker {
   template<class P>
   void applyParticles(const P *particles, int np, uint64_t mask){
     Node<ForceData> **buckets = ctx.group->buckets;
+    if(ctx.group->packet){
+#ifdef CHECK_TRAVERSAL_MASS
+      for(uint64_t left = mask; left != 0; left &= left - 1)
+        for(int i = 0; i < np; i++)
+          traversalMass[buckets[__builtin_ctzll(left)]->getKey()] += particles[i].mass;
+#endif
+      const uint64_t lanes = packetLanes(mask);
+      for(int i = 0; i < np; i++) packetApply(lanes,particles[i].mass,particles[i].position);
+      state->incrPartPartInteractions(0,(CmiUInt8)np*__builtin_popcountll(lanes));
+      return;
+    }
     for(uint64_t left = mask; left != 0; left &= left - 1){
       const int b = __builtin_ctzll(left);
       Node<ForceData> *bucket = buckets[b];

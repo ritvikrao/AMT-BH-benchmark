@@ -59,6 +59,7 @@ void TreePiece::formWalkGroups(){
     for(int b = g.numBuckets; b < WALK_GROUP_MAX_BUCKETS; b++){
       g.cx[b] = g.cy[b] = g.cz[b] = 0.0;
     }
+    g.packet = globalParams.packetWalk && particles <= PACKET_MAX_LANES;
     walkGroups.push_back(g);
   }
 }
@@ -102,7 +103,7 @@ void TreePiece::doLocalGravity(RescheduleMsg *msg){
     const WalkGroup &g = walkGroups[localTraversalState.current];
     localTraversalWorker.setContext(WalkContext(&g,allBuckets(g)));
     trav.gravityWalk(root,&localTraversalWorker,&localTraversalState,allBuckets(g));
-    flushAllSources();
+    localTraversalWorker.endWalk();
     localTraversalState.current++;
     buckets += g.numBuckets;
     i++;
@@ -125,7 +126,7 @@ void TreePiece::doRemoteGravity(RescheduleMsg *msg){
     const WalkGroup &g = walkGroups[remoteTraversalState.current];
     remoteTraversalWorker.setContext(WalkContext(&g,allBuckets(g)));
     trav.gravityWalk(root,&remoteTraversalWorker,&remoteTraversalState,allBuckets(g));
-    flushAllSources();
+    remoteTraversalWorker.endWalk();
     remoteTraversalState.current++;
     buckets += g.numBuckets;
     i++;

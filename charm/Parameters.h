@@ -41,6 +41,10 @@ struct Parameters {
   int yieldPeriod;
   // Most particles in a walk group (WalkGroup.h); 1 walks each bucket alone.
   int walkGroupParticles;
+  // -walk=packet applies accepted nodes to the group's particles in SIMD
+  // lanes during the walk (Packet.h); -walk=list gathers per-bucket
+  // interaction lists and applies them afterwards (gravity.h).
+  bool packetWalk;
   int cacheLineSize;
 
   // -balance=count (default) cuts the decomposition by particle count;
@@ -81,6 +85,7 @@ struct Parameters {
     p | ppb;
     p | yieldPeriod;
     p | walkGroupParticles;
+    p | packetWalk;
     p | theta;
     p | cacheLineSize;
     p | balanceByCost;

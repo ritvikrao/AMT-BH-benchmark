@@ -36,6 +36,8 @@
 #define DEFAULT_CHUNK_DEPTH 4
 #define DEFAULT_YIELD_PERIOD 5
 #define DEFAULT_WALK_GROUP_PARTICLES 64
+#define DEFAULT_WALK "auto"
+#define AUTO_PACKET_MAX_BUCKET 4
 #define DEFAULT_TREE_PIECES_PER_PROC 8
 
 // ParaView snapshots are off unless -output= names a prefix: a full-frequency

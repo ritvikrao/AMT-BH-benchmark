@@ -19,6 +19,9 @@ const int WALK_GROUP_MAX_BUCKETS = 32;
 struct WalkGroup {
   Node<ForceData> **buckets;
   int numBuckets;
+  // Walked with the packet (Packet.h) rather than the interaction lists:
+  // -walk=packet and at most PACKET_MAX_LANES particles.
+  bool packet;
   // The buckets' centres of mass, by coordinate, so that the opening test
   // for all of the group's buckets against one node is a vector loop rather
   // than a pointer chase per bucket (TraversalWorker::visit).

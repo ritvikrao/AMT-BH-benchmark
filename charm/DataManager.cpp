@@ -1391,6 +1391,7 @@ void DataManager::finishIteration(){
   // Apply the sources still waiting in this PE's interaction list
   // (gravity.h) before anything reads the forces.
   flushAllSources();
+  packetFlush();
   for(int b = 0; b < WALK_GROUP_MAX_BUCKETS; b++) sources.bucket[b] = NULL;
   timers.stop(PHASE_TRAVERSAL);
 

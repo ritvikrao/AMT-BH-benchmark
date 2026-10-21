@@ -147,6 +147,8 @@ Options take the form `-<name>=<value>`:
 | `killat` | number of steps to run | 10 |
 | `chunkdepth` | subtree depth to fetch per remote request | 4 |
 | `yield` | buckets processed before yielding the PE | 5 |
+| `walkgroup` | most particles in a walk group: buckets that walk the tree together, each still tested at every node (1 = one bucket at a time) | 64 |
+| `walk` | `packet`: apply accepted nodes to the group's particles in SIMD lanes during the walk; `list`: gather per-bucket interaction lists and apply them afterwards; `auto`: `packet` for `b` up to 4, else `list`. Same interactions either way | `auto` |
 | `balance` | decomposition weight: `count` (particles) or `cost` (last step's interactions per particle) | `count` |
 | `timers` | phases to time: `all`, `none`, or a comma-separated list | `all` |
 | `output` | path prefix for ParaView snapshots; open `<prefix>.pvd` | none (no output) |

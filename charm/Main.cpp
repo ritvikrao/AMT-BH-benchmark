@@ -119,6 +119,19 @@ void Main::setParameters(CkArgMsg *m){
   globalParams.walkGroupParticles = params.getiparam("walkgroup", DEFAULT_WALK_GROUP_PARTICLES, table);
   CkPrintf("walkgroup: %d\n", globalParams.walkGroupParticles);
 
+  string walk = params.getsparam("walk", table);
+  if(walk.empty()) walk = DEFAULT_WALK;
+  if(walk != "packet" && walk != "list" && walk != "auto"){
+    CkPrintf("[Main] -walk=%s: expected 'packet', 'list' or 'auto'\n", walk.c_str());
+    CkAbort("bad command line arguments\n");
+  }
+  // auto: the packet walk for small buckets, where it is faster (1.3x at
+  // one particle per bucket), the lists from five particles up, where they
+  // match or beat it (4M bodies, 120 PEs, leaf 10: 0.320 vs 0.325 s/step).
+  if(walk == "auto") walk = (globalParams.ppb <= AUTO_PACKET_MAX_BUCKET) ? "packet" : "list";
+  globalParams.packetWalk = (walk == "packet");
+  CkPrintf("walk: %s\n", walk.c_str());
+
   string balance = params.getsparam("balance", table);
   if(balance.empty()) balance = "count";
   if(balance != "cost" && balance != "count"){

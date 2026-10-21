@@ -14,7 +14,6 @@ void Request::deliverParticles(int num){
     Requestor &req = requestors[i];
     TraversalWorker *worker = req.worker;
 
-    WalkContext saveContext = worker->getContext();
     worker->setContext(req.context);
 
     ExternalParticle *externalParticles = (ExternalParticle *)data;
@@ -22,9 +21,7 @@ void Request::deliverParticles(int num){
       CkAssert(!isnan((externalParticles+j)->position.length()));
     }
     worker->applyParticles(externalParticles,num,req.context.mask);
-    flushAllSources();
-
-    worker->setContext(saveContext);
+    worker->endWalk();
     State *state = req.state;
     if(state->decrPending()){
       worker->done();
@@ -39,7 +36,6 @@ void Request::deliverNode(){
     Requestor &req = requestors[i];
     TraversalWorker *worker = req.worker;
 
-    WalkContext saveContext = worker->getContext();
     worker->setContext(req.context);
 
     Traversal<ForceData> *traversal = req.traversal; 
@@ -49,9 +45,7 @@ void Request::deliverNode(){
     for(int j = 0; j < BRANCH_FACTOR; j++){
       traversal->gravityWalk(firstChild+j,worker,state,req.context.mask);
     }
-    flushAllSources();
-
-    worker->setContext(saveContext);
+    worker->endWalk();
     if(state->decrPending()){
       worker->done();
     }
