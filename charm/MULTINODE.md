@@ -55,14 +55,12 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
       still has the Step 1 bug, which tiny softening magnifies; our branch had
       a second fault, the self-term cancellation. The kernel now skips the
       self term, and `eps=0` works ([results](results/issue7-ep-2026-10-21.txt)).
-- [ ] **P** Performance (issue #7): vectorised interaction-list kernel and
-      devirtualised walk (c185cda), walk groups (3a54c7e), packet walk for
-      small leaves (03c4a2e). 4M bodies, leaf 10: 1 core 41.45 -> 13.42
-      s/step, 120 cores 0.609 -> 0.311; level with Julia-Dagger, 1.37x (1
-      core) to 1.75x (120 cores) behind HPX
-      ([results](results/perf-1node-2026-10-21.txt)). Open: leaf 1 (5x behind
-      HPX: the binary tree makes 2.5x its opening tests), load imbalance at
-      64+ PEs, decomposition every step.
+- [x] **P** Performance (issue #7): vectorised kernel, devirtualised walk, walk
+      groups, packet walk, empty buckets out of the walk, cubic Morton keys.
+      4M bodies, leaf 10: 1 core 41.45 -> 6.94 s/step, 120 cores 0.609 -> 0.146
+      ([results](results/perf-1node-2026-10-21.txt)); verified across 1, 2 and 4
+      Delta nodes ([results](results/correctness-2026-10-21.txt)). Open: leaf 1
+      (0.556 vs HPX 0.322 at 64 cores), load imbalance at 64+ PEs.
 - [x] **2** Correctness matrix on 1, 2 and 4 nodes passes
       ([results](results/correctness-2026-10-14.txt)). `run.sh` takes `NODES`.
 - [x] **3a** Particle exchange: DM-to-DM with exact counts (bbce8b0). Verified on
@@ -83,13 +81,14 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
       pinned build, 8M 4.41x from 1 to 8 nodes, correct on 8 nodes
       ([results](results/pinned-2026-10-17.txt), "Pinned build on Stampede3").
       Not done: 32M, weak scaling (50k/core), Delta.
-- [ ] **5** README multi-node section (done: "Running across nodes"), results, PR upstream.
+- [ ] **5** README multi-node section (done: "Running across nodes"), results, PR upstream (opened: #8, 2026-10-21).
 
 ## What has been verified, where
 
 | date | machine | what | commit | job |
 |---|---|---|---|---|
 | 2026-09-10 | Delta, 1 node | 1-120 cores, both layouts, 138 runs ([report](results/REPORT-1node-2026-09-10.txt)) | 2cdf1d5 | 21945686 |
+| 2026-10-21 | Delta, 1/2/4 nodes | **PR #8 code** (single-node performance changes): 2M energy series identical on 1x8, 8x15, 2x2x15, 2x8x15, 4x8x15 (480 PEs); forces vs 1x8 max 3.9e-14 ([results](results/correctness-2026-10-21.txt)) | e02ff61 | 23108565 |
 | 2026-10-17 | Stampede3 skx, 1/2/4/8 nodes | **Pinned build** (`build.sh`): 2M energy series identical to all printed digits on 1x8, 1x2x23, 2x2x23, 4x2x23, 8x2x23 and 8x4x11 (352 PEs); forces vs 1x8 max 6.0e-14 at 8 nodes; same code on the June runtime: energies identical, forces 2.2e-14 | 39c5d41 | 3609153 (batch) |
 | 2026-10-16 | Stampede3 skx, 1/2/4 nodes | **Pinned build**, 1ff2080 and 39c5d41 against 39c5d41 on `~/charm_reconverse`: each identical to its own 1x8 on 1x2x23, 2x2x23, 4x2x23, 4x4x11 | 1ff2080, 39c5d41 | 3606099 (idev; ended in NODE_FAIL, see below) |
 | 2026-10-16 | Stampede3 skx, 1/2/4 nodes | **Traversal** (`chunkdepth` 4, leaf 24): 8M energy series identical to all printed digits on 1x2x23, 2x2x23 and 4x2x23, with `-balance` count and cost; with `-b=10 -chunkdepth=3` the binary reproduces 1ff2080 exactly; leaf 24 force error vs direct sum 4.77e-3 median (leaf 10: 5.11e-3) | 39c5d41 | 3605876, 3605917 (idev) |
