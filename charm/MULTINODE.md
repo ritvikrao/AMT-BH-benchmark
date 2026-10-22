@@ -88,6 +88,7 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
 | date | machine | what | commit | job |
 |---|---|---|---|---|
 | 2026-09-10 | Delta, 1 node | 1-120 cores, both layouts, 138 runs ([report](results/REPORT-1node-2026-09-10.txt)) | 2cdf1d5 | 21945686 |
+| 2026-10-22 | Delta, 1 node | **Particle messages capped at 1 GB** (issue #7 comment: 32M bodies on 1 PE died with `CmiAlloc: size <= 0`, as Charm++ sizes messages with an int). 32M on 1 PE: e02ff61 crashes, fix runs, energies identical to 1x2; with 64 KB messages, 2M on 1x8 and 8x15 identical to e02ff61 | this commit | 23112375 |
 | 2026-10-21 | Delta, 1/2/4 nodes | **PR #8 code** (single-node performance changes): 2M energy series identical on 1x8, 8x15, 2x2x15, 2x8x15, 4x8x15 (480 PEs); forces vs 1x8 max 3.9e-14 ([results](results/correctness-2026-10-21.txt)) | e02ff61 | 23108565 |
 | 2026-10-17 | Stampede3 skx, 1/2/4/8 nodes | **Pinned build** (`build.sh`): 2M energy series identical to all printed digits on 1x8, 1x2x23, 2x2x23, 4x2x23, 8x2x23 and 8x4x11 (352 PEs); forces vs 1x8 max 6.0e-14 at 8 nodes; same code on the June runtime: energies identical, forces 2.2e-14 | 39c5d41 | 3609153 (batch) |
 | 2026-10-16 | Stampede3 skx, 1/2/4 nodes | **Pinned build**, 1ff2080 and 39c5d41 against 39c5d41 on `~/charm_reconverse`: each identical to its own 1x8 on 1x2x23, 2x2x23, 4x2x23, 4x4x11 | 1ff2080, 39c5d41 | 3606099 (idev; ended in NODE_FAIL, see below) |

@@ -767,19 +767,35 @@ int DataManager::homeOf(int tp){
   return tpHome[tp];
 }
 
+// Particles per ParticleMsg. Charm++ sizes a message with an int (CmiAlloc,
+// CkAllocMsg), so one message must stay well under 2 GB: 32M bodies on one PE
+// are 3.6 GB, which wrapped negative ("CmiAlloc: size <= 0", issue #7).
+// Receivers count particles, not messages, so a destination may get several.
+#ifndef PARTICLE_MSG_BYTES
+#define PARTICLE_MSG_BYTES (1 << 30)
+#endif
+static const int MAX_PARTICLES_PER_MSG = PARTICLE_MSG_BYTES / sizeof(Particle);
+
 void DataManager::emitFlushRun(){
-  if(flushRuns.empty()) return;
-  int total = 0;
-  for(size_t i = 0; i < flushRuns.size(); i++) total += flushRuns[i].second;
-  ParticleMsg *msg = new (total,0) ParticleMsg;
-  msg->numParticles = total;
-  Particle *out = msg->part;
-  for(size_t i = 0; i < flushRuns.size(); i++){
-    memcpy(out, flushRuns[i].first, sizeof(Particle)*flushRuns[i].second);
-    out += flushRuns[i].second;
+  size_t run = 0;    // the run being copied
+  int done = 0;      // particles of it already sent
+  while(run < flushRuns.size()){
+    int total = 0;
+    for(size_t i = run; i < flushRuns.size() && total < MAX_PARTICLES_PER_MSG; i++)
+      total += flushRuns[i].second - (i == run ? done : 0);
+    total = std::min(total, MAX_PARTICLES_PER_MSG);
+    ParticleMsg *msg = new (total,0) ParticleMsg;
+    msg->numParticles = total;
+    Particle *out = msg->part;
+    for(int left = total; left > 0; ){
+      const int n = std::min(left, flushRuns[run].second - done);
+      memcpy(out, flushRuns[run].first + done, sizeof(Particle)*n);
+      out += n; left -= n; done += n;
+      if(done == flushRuns[run].second){ run++; done = 0; }
+    }
+    thisProxy[flushDest].receiveParticles(msg);
   }
   flushRuns.clear();
-  thisProxy[flushDest].receiveParticles(msg);
 }
 
 // How many particles this PE's TreePieces own this step, from the counts.
