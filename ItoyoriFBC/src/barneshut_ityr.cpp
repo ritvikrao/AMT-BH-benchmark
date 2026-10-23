@@ -1,14 +1,21 @@
 #define ITYR_COPY_FUTURE_DATA 1
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <fstream>
+#include <memory>
+#include <new>
 #include <string>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <utility>
 #include <vector>
 
@@ -22,22 +29,142 @@ using namespace std;
 using Clock = chrono::steady_clock;
 using TimePoint = chrono::time_point<Clock>;
 
-// Body without the accel fields: the parallel path keeps walk results in the
-// per-node accel buffer, not in the body (only --brute-force materializes a
-// full copy). id + 7 doubles is exactly one cache line. The shared readers are
-// templated over the body struct.
+// Large arrays live in one POSIX shm arena per node instead of the per-rank
+// RMA windows. Each node builds its own tree; only the accel array is
+// exchanged across nodes.
+class NodeArena {
+public:
+  explicit NodeArena(size_t data_size)
+      : size_(data_size + kHeaderSize), owner_(false) {
+    auto& topo = ityr::common::topology::instance::get();
+    const int intra = topo.intra_my_rank();
+    char name[160] = {};
+    uintptr_t addr = 0;
+
+    if (intra == 0) {
+      snprintf(name, sizeof(name), "/ityr_bh_arena_%d_%d_%d",
+               (int)getuid(), (int)topo.inter_my_rank(), (int)getpid());
+      fd_ = shm_open(name, O_CREAT | O_RDWR | O_TRUNC, S_IRUSR | S_IWUSR);
+      if (fd_ < 0) {
+        perror("shm_open");
+        ityr::common::die("[barneshut] cannot create node arena");
+      }
+      if (ftruncate(fd_, (off_t)size_) != 0) {
+        perror("ftruncate");
+        ityr::common::die("[barneshut] cannot size node arena");
+      }
+      void* p = mmap(nullptr, size_, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0);
+      if (p == MAP_FAILED) {
+        perror("mmap");
+        ityr::common::die("[barneshut] cannot map node arena");
+      }
+      mapping_ = static_cast<std::byte*>(p);
+      addr = reinterpret_cast<uintptr_t>(mapping_);
+      new (mapping_) std::atomic<size_t>(0);
+      owner_ = true;
+      snprintf(name_, sizeof(name_), "%s", name);
+    }
+
+    MPI_Bcast(name, sizeof(name), MPI_CHAR, 0, topo.intra_mpicomm());
+    MPI_Bcast(&addr, 1, MPI_UINT64_T, 0, topo.intra_mpicomm());
+
+    if (intra != 0) {
+      fd_ = shm_open(name, O_RDWR, S_IRUSR | S_IWUSR);
+      if (fd_ < 0) {
+        perror("shm_open");
+        ityr::common::die("[barneshut] cannot open node arena");
+      }
+      int flags = MAP_SHARED;
+#ifdef MAP_FIXED_NOREPLACE
+      flags |= MAP_FIXED_NOREPLACE;
+#else
+      flags |= MAP_FIXED;
+#endif
+      void* p = mmap(reinterpret_cast<void*>(addr), size_, PROT_READ | PROT_WRITE,
+                     flags, fd_, 0);
+      if (p == MAP_FAILED || reinterpret_cast<uintptr_t>(p) != addr) {
+        perror("mmap");
+        ityr::common::die("[barneshut] cannot map node arena at the leader address");
+      }
+      mapping_ = static_cast<std::byte*>(p);
+    }
+
+    hdr_ = reinterpret_cast<std::atomic<size_t>*>(mapping_);
+    base_ = mapping_ + kHeaderSize;
+    data_size_ = size_ - kHeaderSize;
+    MPI_Barrier(topo.intra_mpicomm());
+    // All local ranks have mapped it; unlink now so a crash cannot leave a
+    // stale shm object.
+    if (owner_) {
+      if (shm_unlink(name_) == -1) perror("shm_unlink");
+      owner_ = false;
+    }
+  }
+
+  ~NodeArena() {
+    if (mapping_) munmap(mapping_, size_);
+    if (fd_ >= 0) close(fd_);
+  }
+
+  void* alloc(size_t bytes, size_t alignment = 64) {
+    if (bytes == 0) return nullptr;
+    size_t a = (alignment + sizeof(size_t) - 1) / sizeof(size_t) * sizeof(size_t);
+    size_t off = hdr_->load(std::memory_order_relaxed);
+    size_t aligned = (off + a - 1) / a * a;
+    if (aligned + bytes > data_size_) {
+      fprintf(stderr,
+              "[barneshut] node arena exhausted: need %.1f MiB, used %.1f MiB, "
+              "capacity %.1f MiB; increase BARNESHUT_NODE_ARENA_MB\n",
+              bytes / 1048576.0, aligned / 1048576.0, data_size_ / 1048576.0);
+      ityr::common::die("[barneshut] node arena exhausted");
+    }
+    hdr_->store(aligned + bytes, std::memory_order_relaxed);
+    if (aligned + bytes > high_water_) high_water_ = aligned + bytes;
+    return base_ + aligned;
+  }
+
+  void mark_persistent() { persistent_ = hdr_->load(std::memory_order_relaxed); }
+  void reset_step() { hdr_->store(persistent_, std::memory_order_relaxed); }
+  size_t high_water() const { return high_water_; }
+  size_t capacity() const { return data_size_; }
+
+private:
+  static constexpr size_t kHeaderSize = 64;
+  std::byte* mapping_ = nullptr;
+  std::byte* base_ = nullptr;
+  std::atomic<size_t>* hdr_ = nullptr;
+  size_t size_ = 0;
+  size_t data_size_ = 0;
+  size_t persistent_ = 0;
+  size_t high_water_ = 0;
+  int fd_ = -1;
+  bool owner_ = false;
+  char name_[160] = {};
+};
+
+inline std::unique_ptr<NodeArena> g_node_arena;
+inline MPI_Win g_acc_win = MPI_WIN_NULL;   // multi-node arena: accel window per node
+
+inline bool use_node_arena() { return g_node_arena != nullptr; }
+
+inline void* alloc_node(size_t bytes) {
+  return g_node_arena ? g_node_arena->alloc(bytes)
+                      : ityr::ito::alloc_future_data(bytes);
+}
+
+inline void free_node(void* p, size_t bytes) {
+  if (g_node_arena) return;   // arena memory is reclaimed at process exit
+  if (p) ityr::ito::dealloc_future_data(p, bytes);
+}
+
+// Body without accel fields; id + 7 doubles is one cache line.
 struct Body64 {
   long long id;
   double mass, x, y, z, vx, vy, vz;
 };
 
-// Wall-clock phase timers. A task that suspends in wait()/get() may migrate to
-// another process, so a timer interval spanning a suspension would mix clock
-// bases between ranks. Every phase boundary here is a barrier-synchronized
-// SPMD point, so each rank accumulates only local steady-clock deltas between
-// boundaries and the reported value is the MPI_MAX across ranks (the critical
-// path). Master-only sub-phases without suspension points use add_local.
-// Barriers are skipped under --no-timers.
+// Phase timers use barrier-synchronized SPMD boundaries; the reported value is
+// the MPI_MAX across ranks. add_local() is for master-only sub-phases.
 struct PhaseTimer {
   double ms = 0;
   TimePoint last{};
@@ -68,17 +195,9 @@ inline PhaseTimer t_splan, t_sfold, t_sasm;
 inline PhaseTimer t_pcompact;
 #endif
 
-// Parallel Barnes-Hut on ItoyoriFBC (mirrors barneshut.cpp).
-// Dataflow per step: kick+drift -> slice keys -> redistribute -> tree -> forces -> kick.
-// Particles are distributed: each node owns a fixed slice of the global sorted
-// order and only ever holds those bodies; the master transiently holds the
-// gathered (key, body) pairs during the build. The tree and the compact bodies
-// are derived structures, so they are replicated per node.
-// Futures are the only channel. wait()/get() suspend until the future is ready
-// and may migrate the task to another rank (get() on an already-ready future
-// is a fast path that never suspends), so pointers obtained from get() are
-// short-lived borrows valid only on the rank that obtained them. Capture only
-// initialized values; the consumer of a buffer deallocates what get() returned.
+// Distributed Barnes-Hut on ItoyoriFBC.
+// Per step: kick/drift, slice keys, redistribute, build tree, forces, kick.
+// Particles are distributed; the tree and compact bodies are replicated per node.
 
 struct ForceResult {
   double ax, ay, az, pot;
@@ -89,12 +208,7 @@ struct BuildResult {
   size_t tree_bytes;
   double box_side, xmin, ymin, zmin;
 };
-// ---------------- distributed-particle layout ----------------
-// Fixed per-node slices of the global sorted order: slice s = [los[s], los[s+1])
-// with los[s] = floor(s*n/(ninter*gran)) * gran, gran = cfg.build_cutoff
-// (constant across steps, so every body pointer is broadcast once at init).
-// Each node sorts its own slice; the master's merge of the per-node runs
-// yields the exact global (key, idx)-ordered sequence.
+// Per-node slices of the global sorted order, fixed for the whole run.
 constexpr int MAX_INTER_NODES = 64;
 
 struct SliceLayout {
@@ -122,20 +236,13 @@ struct GatherPair {
   Body64 body;
 };
 
-// The alltoallv payload: the body + its exact global position (the merged
-// (key, idx)-order position recorded during the per-node merge). The receiver
-// scatter-writes each element straight into the live slice at that position —
-// no merge, no key comparison.
+// Body plus its destination position in the global sorted order.
 struct PosPair {
   uint32_t pos;
   Body64 body;
 };
 
-// Master-side per-step build buffers (persistent allocations, reused every
-// step; only the master's intra-0 touches them). keys doubles as the master's
-// keys replica; bodies is the master's full sorted copy, gathered on demand at
-// output/brute-force steps; compact is the master's replica (its own slice
-// folded during the redistribute); vel_scratch is the energy gather.
+// Persistent build buffers owned by the master.
 struct MasterBuild {
   uint64_t* keys = nullptr;         // 8 B * n (also the master's keys replica)
   Body64* bodies = nullptr;         // 64 B * n
@@ -144,14 +251,8 @@ struct MasterBuild {
   bool owns = false;
 };
 
-// Everything the tree build needs, captured by value into closures (task
-// migration byte-copies the stack frame, so all members are inline fixed-size
-// arrays — no heap pointers that could dangle after a steal). Each node holds
-// its own replica of the merged keys and the compact bodies; the pool is
-// mapped at identical addresses only within a node, so a task must read the
-// replica of the node that executes it. Every replica holds identical bytes,
-// so a fold reads the executing node's copy and the subtree is identical
-// everywhere.
+// Per-node replicas used by the build. Fixed-size arrays keep captured
+// closures valid across task migration.
 struct BuildCtx {
   CompactBody* compact[MAX_INTER_NODES];
   uint64_t* keys[MAX_INTER_NODES];       // per-node merged-keys replicas (identical content)
@@ -169,13 +270,8 @@ inline Bounds bounds_from_extremes(const Extremes& e) {
 
 // ---------------- parallel phase tasks ----------------
 
-// Parallel for with the binary range splitting the scheduler tolerates (the
-// only task idiom: spawn + wait_all). Leaves write their results in place and
-// return nothing, so there is no per-leaf buffer and no concat. The splits are
-// chunk-aligned: every leaf covers exactly one chunk [c*cutoff, (c+1)*cutoff)
-// except the last partial one, which makes chunk ownership unambiguous (each
-// chunk is computed by exactly one leaf, hence on exactly one node) — what the
-// combine's chunk-bitmask exchange relies on.
+// Recursive spawn/wait parallel for. Ranges are chunk-aligned so each chunk
+// has exactly one owner; the accel combine relies on that.
 template <typename LeafFn>
 int par_for(size_t lo, size_t hi, size_t cutoff, LeafFn leaf) {
   size_t n = hi - lo;
@@ -494,14 +590,7 @@ void merge_keys_parallel(const SliceLayout& L, const uint64_t* gathered, uint64_
     }
     return;
   }
-  // ninter > 2: bottom-up pairwise stable merge. Round 1 merges run pairs
-  // (0,1), (2,3), ...; each later round merges consecutive group results; an
-  // odd trailing group passes through against an empty partner. The tie rule at
-  // every merge is left-group-first, and groups always carry ascending sender
-  // ranges, so the composed order is exactly the lexicographic (key, sender,
-  // pos) a priority-queue merge would produce. All merges are intra-parallel
-  // (output chunks), and the (key, src, src_pos) triples carried through the
-  // rounds let the final pass record mypos.
+  // More than two nodes: bottom-up pairwise stable merge of the key runs.
   {
     const size_t ntot = L.los[L.ninter];   // the sentinel is the global n
     MergeTriple* cur = r_mbufA;
@@ -584,20 +673,9 @@ void merge_keys_parallel(const SliceLayout& L, const uint64_t* gathered, uint64_
   }
 }
 
-// SPMD redistribution after the keys phase:
-//   1. Allgather each node's sorted keys (8 B/body) so every node holds the
-//      full keys set.
-//   2. Intra-parallel merge producing the full keys replica and each node's
-//      own elements' exact global positions (mypos).
-//   3. A monotonic histogram of the positions into per-destination send counts
-//      + an in-place pack (the position rides in the pair's key field, so the
-//      send payload is the (pos, body) pair).
-//   4. MPI_Alltoallv of the packed payload: for a stationary distribution each
-//      node's run is its own slice, so only boundary-crossers actually move.
-//   5. A straight scatter-write into the live slice: every received element
-//      lands at its exact position, so each slice position is written exactly
-//      once and no merge is needed.
-//   6. Per-node compact of the node's own slice.
+// Redistribute bodies after the local key sort: gather the global key runs,
+// merge positions, exchange bodies by destination, and compact this node's
+// slice. The single-node fast path below skips the exchange.
 void redistribute_build(const SliceLayout& L, GatherPair* pairs, KeyPair* run,
                         uint64_t* krun, Body64* live, uint64_t* keys_rep, uint64_t* gkeys,
                         GatherPair* recv, uint32_t* mypos, CompactBody* compact,
@@ -615,15 +693,7 @@ void redistribute_build(const SliceLayout& L, GatherPair* pairs, KeyPair* run,
 #ifdef ITYR_PROF
     TimePoint t0n = Clock::now();
 #endif
-    // Fast path for one node: the fully sorted run already lives in the
-    // node-wide shm, a sorted element's position is its index, and the only
-    // node owns every element — the gather, merge, histogram and exchange are
-    // all no-ops. One fused local pass per rank: copy the chunk of keys into
-    // the replica (the tree's range scans need contiguous uint64s) and
-    // scatter-write the chunk's bodies into the live in sorted order
-    // (pairs[j] = the element at sorted position j, materialized by the keys
-    // phase). Zero collectives, zero barriers (every read/write here is the
-    // rank's own chunk).
+    // Single node: sorted position is the array index; no exchange is needed.
     const size_t j0 = (size_t)intra * nslice / nintra, j1 = (size_t)(intra + 1) * nslice / nintra;
     for (size_t j = j0; j < j1; ++j) {
       keys_rep[j] = run[j].first;
@@ -795,6 +865,7 @@ inline void gather_full_bodies(const SliceLayout& L, Body64* live, Body64* bodie
     dspls[s] = (int)(L.los[s] * sizeof(Body64));
   }
   if (inter == 0) memcpy(bodies + L.slice_lo, live, L.nslice * sizeof(Body64));
+  if (L.ninter == 1) return;   // single node: the memcpy above is the gather
   collective_timed_cat(tc_dist, [&] {
     MPI_Gatherv(inter == 0 ? MPI_IN_PLACE : live,
                 inter == 0 ? 0 : (int)(L.nslice * sizeof(Body64)), MPI_BYTE,
@@ -841,16 +912,8 @@ inline void build_rec_direct(const uint64_t* keys, const CompactBody* compact, s
   finalize_com(m);
 }
 
-// ---- per-node replicas of the tree + compact ----
-// The walk needs the full tree + compact on every rank. Both are derived
-// structures, so replicating them is fine — only the particle set must be
-// distributed. The tree is built on whatever rank the build landed on; each
-// node's copy is delivered with a two-sided MPI_Bcast over inter_mpicomm (the
-// color-0 group is the set of node leaders). get() on a same-node buffer is a
-// zero-copy direct pointer, so every force leaf reads its own node's replica
-// with plain loads (zero interconnect). The per-node pointers live in inline
-// fixed arrays: they are captured into spawn closures, and task migration
-// byte-copies the stack frame — a heap vector would dangle after a steal.
+// Per-node pointers to the tree, compact bodies, accel buffer, and chunk mask.
+// The arrays are fixed-size because they are captured by task closures.
 struct NodeRepPointers {
   Node* tree[MAX_INTER_NODES];
   CompactBody* compact[MAX_INTER_NODES];
@@ -887,16 +950,16 @@ NodeReplicas make_node_replicas(const BuildResult& br, CompactBody* compact,
   // (is_locally_accessible == same inter node); otherwise pull a replica.
   if (intra == 0) {
     auto& alloc = ityr::ito::worker::instance::get().sched().fpool().remote_bufs_allocator_;
-    const bool tree_local = alloc.is_locally_accessible(br.tree);
+    const bool tree_local = use_node_arena() || alloc.is_locally_accessible(br.tree);
     if (tree_local) {
       r.rep.tree[inter] = br.tree;
       r.my_tree = br.tree;
     } else {
-      void* tr = ityr::ito::alloc_future_data(br.tree_bytes);
+      void* tr = alloc_node(br.tree_bytes);
       r.rep.tree[inter] = (Node*)tr;
       r.my_tree = tr;
     }
-    if (topo.inter_n_ranks() > 1) {
+    if (topo.inter_n_ranks() > 1 && !use_node_arena()) {
       // Two-sided Bcast orders the owner's plain stores before any reader (a
       // collective both sides complete), and it is a tree rather than a star.
       // The owner's node is derivable by pointer arithmetic
@@ -934,7 +997,7 @@ NodeReplicas make_node_replicas(const BuildResult& br, CompactBody* compact,
 
 void free_node_replicas(NodeReplicas& r) {
   if (r.owns_replica) {
-    ityr::ito::dealloc_future_data(r.my_tree, r.tree_bytes);
+    free_node(r.my_tree, r.tree_bytes);
   }
 }
 
@@ -981,20 +1044,28 @@ void init_build_replicas(BuildReplicas& r, size_t n, size_t gran) {
   r.mbufB = nullptr;
   if (intra == 0) {
     if (r.L.nslice > 0) {
-      r.live = (Body64*)ityr::ito::alloc_future_data(r.L.nslice * sizeof(Body64));
+      r.live = (Body64*)alloc_node(r.L.nslice * sizeof(Body64));
       r.live_bytes = r.L.nslice * sizeof(Body64);
-      r.run = (KeyPair*)ityr::ito::alloc_future_data(r.L.nslice * sizeof(KeyPair));
-      r.pairs = (GatherPair*)ityr::ito::alloc_future_data(r.L.nslice * sizeof(GatherPair));
-      r.recv = (GatherPair*)ityr::ito::alloc_future_data(r.L.nslice * sizeof(GatherPair));
-      r.krun = (uint64_t*)ityr::ito::alloc_future_data(r.L.nslice * sizeof(uint64_t));
-      r.mypos = (uint32_t*)ityr::ito::alloc_future_data(r.L.nslice * sizeof(uint32_t));
+      r.run = (KeyPair*)alloc_node(r.L.nslice * sizeof(KeyPair));
+      r.pairs = (GatherPair*)alloc_node(r.L.nslice * sizeof(GatherPair));
     }
-    r.gkeys = (uint64_t*)ityr::ito::alloc_future_data(n * sizeof(uint64_t));
-    r.keys = (uint64_t*)ityr::ito::alloc_future_data(n * sizeof(uint64_t));
+    // These buffers are only touched by the ninter > 1 exchange/merge paths.
+    // On a single node the fast path in redistribute_build skips all of them;
+    // not allocating them keeps the node-wide footprint (and therefore the
+    // leader's future-pool requirement) as small as possible.
+    if (ninter > 1) {
+      if (r.L.nslice > 0) {
+        r.recv = (GatherPair*)alloc_node(r.L.nslice * sizeof(GatherPair));
+        r.krun = (uint64_t*)alloc_node(r.L.nslice * sizeof(uint64_t));
+        r.mypos = (uint32_t*)alloc_node(r.L.nslice * sizeof(uint32_t));
+      }
+      r.gkeys = (uint64_t*)alloc_node(n * sizeof(uint64_t));
+    }
+    r.keys = (uint64_t*)alloc_node(n * sizeof(uint64_t));
     r.keys_bytes = n * sizeof(uint64_t);
     if (ninter > 2) {
-      r.mbufA = (MergeTriple*)ityr::ito::alloc_future_data(n * sizeof(MergeTriple));
-      r.mbufB = (MergeTriple*)ityr::ito::alloc_future_data(n * sizeof(MergeTriple));
+      r.mbufA = (MergeTriple*)alloc_node(n * sizeof(MergeTriple));
+      r.mbufB = (MergeTriple*)alloc_node(n * sizeof(MergeTriple));
     }
     r.owns = true;
   }
@@ -1044,12 +1115,23 @@ void scatter_input(const Body64* input, const SliceLayout& L, Body64* live) {
   auto& topo = ityr::common::topology::instance::get();
   const int intra = topo.intra_my_rank();
   const int ninter = topo.inter_n_ranks();
+  if (ninter == 1) {
+    // Single node: the input and the live slice are both node-local shm.
+    // Copy directly instead of going through MPI_Scatterv, which would expose
+    // the large buffers to the HCA registration path.
+    collective_timed_cat(tc_misc, [&] {
+      if (intra == 0 && L.nslice > 0)
+        memcpy(live, input + L.slice_lo, L.nslice * sizeof(Body64));
+      ityr::common::mpi_barrier(MPI_COMM_WORLD);
+    });
+    return;
+  }
   int cnts[MAX_INTER_NODES] = {}, dspls[MAX_INTER_NODES] = {};
   for (int s = 0; s < ninter; ++s) {
     cnts[s] = (int)((L.los[s + 1] - L.los[s]) * sizeof(Body64));
     dspls[s] = (int)(L.los[s] * sizeof(Body64));
   }
-  collective_timed([&] {
+  collective_timed_cat(tc_misc, [&] {
     if (intra == 0) {
       MPI_Scatterv(input, cnts, dspls, MPI_BYTE, live, (int)(L.nslice * sizeof(Body64)), MPI_BYTE,
                    0, topo.inter_mpicomm());
@@ -1160,39 +1242,30 @@ inline void plan_node_struct(vector<PlanNode>& plan, const uint64_t* keys, size_
   }
 }
 
-// SPMD bulk-synchronous tree build. Every rank plans the tree identically
-// (the keys replicas are identical on every rank), folds its static share of
-// the leaves into local temp buffers, bulk-puts them to the master's single
-// tree array at the precomputed offsets (one flush for all the puts), and the
-// master assembles the internal nodes serially on top (reverse preorder — the
-// children are always in place by construction). One barrier orders the puts
-// before the assembly; make_node_replicas then delivers the per-node replicas.
+// Build the tree cooperatively: plan the split, fold leaf subtrees, put them
+// into the tree array, then assemble internal nodes. With the node arena each
+// node builds the same tree locally; otherwise the master assembles one copy.
 BuildResult build_tree_spmd(const BuildCtx& ctx, size_t n, const Bounds& bd) {
   const size_t cutoff = cfg.build_cutoff, leaf = cfg.leaf;
   auto& topo = ityr::common::topology::instance::get();
-  const int my = topo.my_rank();
-  const int P = topo.n_ranks();
-  const int inode = topo.inter_rank(my);
+  // With the node arena, every node already has the full keys and compact
+  // replicas. Build the identical tree independently on each node, using only
+  // that node's intra ranks: no tree RMA puts and no full-tree broadcast.
+  // Without the arena, keep the original global-master build.
+  const bool local_build = use_node_arena() && topo.inter_n_ranks() > 1;
+  const int my = local_build ? topo.intra_my_rank() : topo.my_rank();
+  const int P = local_build ? topo.intra_n_ranks() : topo.n_ranks();
+  const int inode = topo.inter_rank(topo.my_rank());
+  MPI_Comm plan_comm = local_build ? topo.intra_mpicomm() : MPI_COMM_WORLD;
   const uint64_t* keys = ctx.keys[inode];
-  // 1. The plan: the split structure on every rank (identical inputs =>
-  //    identical plan), the leaf subtree counts distributed (leaf k -> rank
-  //    (k % P)) + one Allgather, then the sizes/offsets derived identically
-  //    everywhere.
+  // Build the plan cooperatively: each rank handles a round-robin share of the
+  // root's octants and the sub-plans are allgathered.
 #ifdef ITYR_PROF
   TimePoint t0pl = Clock::now();
 #endif
   vector<PlanNode> plan;
-  plan.reserve(2 * n / leaf + 16);
+  plan.reserve(2 * n / cutoff + 16);
   plan.push_back({0, n, 0, -1, {}, 0, 0, 0});
-  // The plan is distributed: every rank walks only the root's octant runs (one
-  // O(n) pass), plans its share of the level-1 children (child c -> rank
-  // c % P, round-robin) with local indices, fixes its sub-plan's parent/child
-  // refs (+ its global base, the sub-root's parent sentinel -1 -> the global
-  // root 0), and the sub-plans are exchanged via one MPI_Allgatherv. The
-  // resulting plan order differs from a serial DFS but is a valid
-  // parents-before-children order, so identical splits + folds give the
-  // identical tree content (the array layout is internal — every rank derives
-  // the same offsets).
   size_t rlo[8], rhi[8];
   int nroot = 0;
   if (n > cutoff) {
@@ -1208,7 +1281,7 @@ BuildResult build_tree_spmd(const BuildCtx& ctx, size_t n, const Bounds& bd) {
     }
   }
   vector<PlanNode> sub;
-  sub.reserve(2 * n / leaf / (size_t)P + 16);
+  sub.reserve(2 * n / cutoff / (size_t)P + 16);
   vector<int> cpos((size_t)nroot, -1);   // the local sub-plan index of each level-1 child
   for (int c = my; c < nroot; c += P) {
     cpos[c] = (int)sub.size();
@@ -1217,7 +1290,7 @@ BuildResult build_tree_spmd(const BuildCtx& ctx, size_t n, const Bounds& bd) {
   vector<int> nplans((size_t)P);
   int my_n = (int)sub.size();
   collective_timed_cat(tc_ptr, [&] {
-    MPI_Allgather(&my_n, 1, MPI_INT, nplans.data(), 1, MPI_INT, MPI_COMM_WORLD);
+    MPI_Allgather(&my_n, 1, MPI_INT, nplans.data(), 1, MPI_INT, plan_comm);
   });
   vector<size_t> rank_base((size_t)P + 1);
   rank_base[0] = 1;
@@ -1225,7 +1298,7 @@ BuildResult build_tree_spmd(const BuildCtx& ctx, size_t n, const Bounds& bd) {
   // publish each child's position within its owner's sub-plan (MPI_MAX over the -1 init).
   if (nroot > 0)
     collective_timed_cat(tc_ptr, [&] {
-      MPI_Allreduce(MPI_IN_PLACE, cpos.data(), nroot, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+      MPI_Allreduce(MPI_IN_PLACE, cpos.data(), nroot, MPI_INT, MPI_MAX, plan_comm);
     });
   plan.resize(rank_base[(size_t)P]);
   vector<int> rcnts((size_t)P), rdspls((size_t)P);
@@ -1237,7 +1310,7 @@ BuildResult build_tree_spmd(const BuildCtx& ctx, size_t n, const Bounds& bd) {
   }
   collective_timed_cat(tc_ptr, [&] {
     MPI_Allgatherv(sub.data(), (int)(sub.size() * sizeof(PlanNode)), MPI_BYTE,
-                   plan.data() + 1, rcnts.data(), rdspls.data(), MPI_BYTE, MPI_COMM_WORLD);
+                   plan.data() + 1, rcnts.data(), rdspls.data(), MPI_BYTE, plan_comm);
   });
   // receiver-side fixups: every rank remaps all the blocks' parent/child refs (+ the block's
   // global base; the sub-root's parent sentinel -1 -> the global root 0), then the root's
@@ -1272,7 +1345,7 @@ BuildResult build_tree_spmd(const BuildCtx& ctx, size_t n, const Bounds& bd) {
   // sum the scattered per-rank contributions (each rank counted leaf k % P).
   collective_timed_cat(tc_ptr, [&] {
     MPI_Allreduce(MPI_IN_PLACE, lsize.data(), (int)nleaves, MPI_UINT64_T, MPI_SUM,
-                  MPI_COMM_WORLD);
+                  plan_comm);
   });
   for (size_t i = nplan; i-- > 0;) {
     if (plan[i].nchild == 0) {
@@ -1297,9 +1370,9 @@ BuildResult build_tree_spmd(const BuildCtx& ctx, size_t n, const Bounds& bd) {
   //    global, and the putting ranks need it to derive the target displacements).
   Node* array = nullptr;
   if (my == 0)
-    array = (Node*)ityr::ito::alloc_future_data(total_nodes * sizeof(Node));
+    array = (Node*)alloc_node(total_nodes * sizeof(Node));
   uint64_t ap = (uint64_t)array;
-  collective_timed_cat(tc_ptr, [&] { MPI_Bcast(&ap, 1, MPI_UINT64_T, 0, MPI_COMM_WORLD); });
+  collective_timed_cat(tc_ptr, [&] { MPI_Bcast(&ap, 1, MPI_UINT64_T, 0, plan_comm); });
   array = (Node*)ap;
   // 3. the per-rank fold + bulk put: leaf k -> rank (k % P) (interleaved for balance).
   //    Node-0 ranks fold straight into the master's array (the pool is a
@@ -1316,11 +1389,11 @@ BuildResult build_tree_spmd(const BuildCtx& ctx, size_t n, const Bounds& bd) {
     const PlanNode& pn = plan[leaves[k]];
     const SubRec* rec = subrec.data() + rec_i;
     const size_t nrec = lsize[k];   // the leaf's recorded subtree node count
-    if (rmr.is_locally_accessible(array + pn.off)) {
+    if (use_node_arena() || rmr.is_locally_accessible(array + pn.off)) {
       size_t o = 0;
       fold_from_rec(rec, ctx.compact[inode], 0, (int)leaf, array + pn.off, o);
     } else {
-      Node* tmp = (Node*)ityr::ito::alloc_future_data(pn.size * sizeof(Node));
+      Node* tmp = (Node*)alloc_node(pn.size * sizeof(Node));
       size_t o = 0;
       fold_from_rec(rec, ctx.compact[inode], 0, (int)leaf, tmp, o);
       ityr::common::mpi_put_nb(tmp, pn.size, 0, rmr.get_disp(array + pn.off), rmr.win());
@@ -1332,9 +1405,9 @@ BuildResult build_tree_spmd(const BuildCtx& ctx, size_t n, const Bounds& bd) {
   }
   if (any_remote) ityr::common::mpi_win_flush(0, rmr.win());
   for (size_t t = 0; t < tmps.size(); ++t)
-    ityr::ito::dealloc_future_data(tmps[t], tsz[t] * sizeof(Node));
+    free_node(tmps[t], tsz[t] * sizeof(Node));
   // 4. every fold+put is flushed before the assembly starts.
-  collective_timed_cat(tc_bar, [&] { ityr::common::mpi_barrier(MPI_COMM_WORLD); });
+  collective_timed_cat(tc_bar, [&] { ityr::common::mpi_barrier(plan_comm); });
 #ifdef ITYR_PROF
   t_sfold.add_local(t0fl);
   TimePoint t0as = Clock::now();
@@ -1366,8 +1439,7 @@ BuildResult build_tree_spmd(const BuildCtx& ctx, size_t n, const Bounds& bd) {
 
 // SPMD, every step: slice keys -> redistribute -> tree build. All parts sit
 // inside the build timer.
-BuildResult build_step(BuildReplicas& r, size_t n, bool first_step,
-                       Body64* input_buf, const Bounds& bd,
+BuildResult build_step(BuildReplicas& r, size_t n, const Bounds& bd,
                        CompactBody* const compact_table[MAX_INTER_NODES]) {
   const int intra = ityr::common::topology::intra_my_rank();
   const int inter = ityr::common::topology::inter_my_rank();
@@ -1407,26 +1479,13 @@ BuildResult build_step(BuildReplicas& r, size_t n, bool first_step,
 #ifdef ITYR_PROF
   t_ptree.stop();
 #endif
-  // The step-0 input buffer was consumed by the scatter and is not needed after this.
-  if (first_step && ityr::is_master() && input_buf)
-    ityr::ito::dealloc_future_data(input_buf, n * sizeof(Body64));
   w_build.stop();
   return br;
 }
 
-// Per-body forces for [lo,hi): writes in place into the executing node's accel
-// buffer. Runs entirely on the node-local tree + compact replica (zero-copy
-// direct pointer — no get(), no per-rank interconnect pull). Migration-safe:
-// it reads the replica of the node that executes it, which is identical on
-// every node. Batches K = forceN().lanes() consecutive compact bodies through
-// the shared depth-first SIMD traversal (dispatched at runtime to the best ISA
-// the hardware supports); per-body node-visit order is unchanged vs the scalar
-// walk, so each body's (ax,ay,az,pot) matches the scalar result. Writing
-// another rank's buffer with plain stores is legal within a node: the future
-// pool is a node-wide POSIX shm segment mapped read-write at identical
-// addresses in every intra-node peer. Leaves cannot be pinned to a node, so
-// each node ends up with only the slices its own ranks happened to execute;
-// combine_accel() completes them afterwards.
+// Compute forces for [lo,hi) into the executing node's accel buffer. The walk
+// uses that node's tree and compact replica; combine_accel() fills the gaps
+// left by work stealing.
 int force_range(NodeRepPointers rep, size_t lo, size_t hi, size_t chunk, WalkParams wp) {
   return par_for(lo, hi, chunk, [=](size_t l, size_t r) mutable {
     int inode = ityr::common::topology::inter_rank(ityr::my_rank());
@@ -1491,11 +1550,18 @@ void alloc_node_accel(size_t n, NodeRepPointers& rep, void*& my_acc, bool& owns,
   acc_bytes = n * sizeof(ForceResult);
   size_t mask_words = ((n + cfg.chunk - 1) / cfg.chunk + 63) / 64;
   if (intra == 0) {
-    void* p = ityr::ito::alloc_future_data(acc_bytes);
+    void* p = alloc_node(acc_bytes);
     rep.acc[inter] = (ForceResult*)p;
     my_acc = p;
     owns = true;
-    void* mp = ityr::ito::alloc_future_data(mask_words * sizeof(uint64_t));
+    // Multi-node arena: the accel arrays are outside the future-pool window,
+    // so give the node leaders one small window over their own acc array for
+    // the cross-node combine. This registers acc_bytes per node, not per rank.
+    if (use_node_arena() && ninter > 1) {
+      MPI_Win_create(p, acc_bytes, 1, MPI_INFO_NULL, topo.inter_mpicomm(), &g_acc_win);
+      MPI_Win_lock_all(MPI_MODE_NOCHECK, g_acc_win);
+    }
+    void* mp = alloc_node(mask_words * sizeof(uint64_t));
     memset(mp, 0, mask_words * sizeof(uint64_t));
     rep.cmask[inter] = (uint64_t*)mp;
     my_cmask = mp;
@@ -1533,24 +1599,10 @@ void zero_node_accel(NodeRepPointers& rep, size_t n) {
   collective_timed_cat(tc_bar, [&] { ityr::common::mpi_barrier(ityr::common::topology::intra_mpicomm()); });
 }
 
-// SPMD. Complete every node's accel buffer after the walk. Instead of
-// Allreduce-ing the whole array, each node tracks which `chunk`-aligned ranges
-// it computed in a per-node bitmask (rep.cmask, set by the force leaves). Every
-// chunk is computed by exactly one node, so the leaders Allgather the masks and
-// each node pulls exactly the chunks it lacks from their owner as contiguous
-// runs. Each pulled slot carries the owner's complete value (the owner computed
-// the whole chunk) and every other slot was already written locally, so the
-// result is the same as a full-array exchange and no FP arithmetic is involved.
-// Ordering: the writer's plain stores must be visible to the reader's MPI_Get.
-// Each leader flushes its acc + mask (cache flush + MPI_Win_sync), the Allgather
-// then orders everything (a collective both sides complete), and only then do
-// the RMA pulls run. The missing chunks are gathered per remote owner and
-// pulled with one MPI_Get over an hindexed MPI_BYTE datatype (blocklengths and
-// displacements in bytes, relative to the owner's acc base): with flat work
-// stealing the missing set fragments into many short runs, and per-op flush
-// latency would dominate a one-get-per-run loop. The acc buffers are indexed by
-// global body index on every node, so the origin and target displacement lists
-// are identical and one datatype serves both sides.
+// Complete every node's accel buffer after the walk. Leaves mark the chunks
+// they computed; leaders exchange masks and each node pulls missing chunks
+// from their owners. Flush/sync and the mask Allgather order stores before the
+// RMA reads.
 void combine_accel(NodeRepPointers& rep, size_t n, size_t chunk) {
   auto& topo = ityr::common::topology::instance::get();
   if (topo.inter_n_ranks() <= 1) return;   // single node: nothing to combine
@@ -1560,6 +1612,7 @@ void combine_accel(NodeRepPointers& rep, size_t n, size_t chunk) {
   const int inter = topo.inter_my_rank();
   const int intra = topo.intra_my_rank();
   const int ninter = topo.inter_n_ranks();
+  const bool acc_window = (g_acc_win != MPI_WIN_NULL);
   const size_t nchunks = (n + chunk - 1) / chunk;
   const size_t mask_words = (nchunks + 63) / 64;
   collective_timed([&] {
@@ -1582,8 +1635,14 @@ void combine_accel(NodeRepPointers& rep, size_t n, size_t chunk) {
       double cb_p = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now().time_since_epoch()).count();
 #endif
-      ityr::ito::flush_window_data(rep.acc[inter], n * sizeof(ForceResult));
-      ityr::ito::flush_window_data(rep.cmask[inter], mask_words * sizeof(uint64_t));
+      if (acc_window) {
+        ityr::common::cache_flush(rep.acc[inter], n * sizeof(ForceResult));
+        MPI_Win_sync(g_acc_win);
+        ityr::common::cache_flush(rep.cmask[inter], mask_words * sizeof(uint64_t));
+      } else {
+        ityr::ito::flush_window_data(rep.acc[inter], n * sizeof(ForceResult));
+        ityr::ito::flush_window_data(rep.cmask[inter], mask_words * sizeof(uint64_t));
+      }
 #ifdef ITYR_PROF
       if (cb_leader) cb_fl = std::chrono::duration<double, std::milli>(
                      std::chrono::steady_clock::now().time_since_epoch()).count() - cb_p;
@@ -1624,7 +1683,7 @@ void combine_accel(NodeRepPointers& rep, size_t n, size_t chunk) {
       for (int j = 0; j < ninter; ++j) {
         const auto& runs = runs_by_owner[j];
         if (runs.empty()) continue;
-        if (alloc.is_locally_accessible(rep.acc[j])) {
+        if (!acc_window && alloc.is_locally_accessible(rep.acc[j])) {
           // same-node peer cannot occur at >1 node; defensive fallback only
           for (const auto& r : runs)
             std::memcpy(rep.acc[inter] + r.off, rep.acc[j] + r.off, r.len * sizeof(ForceResult));
@@ -1639,9 +1698,16 @@ void combine_accel(NodeRepPointers& rep, size_t n, size_t chunk) {
         MPI_Datatype t;
         MPI_Type_create_hindexed((int)runs.size(), lens.data(), disps.data(), MPI_BYTE, &t);
         MPI_Type_commit(&t);
-        int peer = alloc.get_owner(rep.acc[j]);
-        MPI_Get(rep.acc[inter], 1, t, peer, alloc.get_disp(rep.acc[j]), 1, t, alloc.win());
-        MPI_Win_flush(peer, alloc.win());
+        if (acc_window) {
+          // The acc offsets are the same on every node: displacement relative
+          // to that node's acc base, not a future-pool pointer.
+          MPI_Get(rep.acc[inter], 1, t, j, 0, 1, t, g_acc_win);
+          MPI_Win_flush(j, g_acc_win);
+        } else {
+          int peer = alloc.get_owner(rep.acc[j]);
+          MPI_Get(rep.acc[inter], 1, t, peer, alloc.get_disp(rep.acc[j]), 1, t, alloc.win());
+          MPI_Win_flush(peer, alloc.win());
+        }
         MPI_Type_free(&t);
       }
       ityr::ito::dealloc_future_data(all, mask_words * ninter * sizeof(uint64_t));
@@ -1652,7 +1718,12 @@ void combine_accel(NodeRepPointers& rep, size_t n, size_t chunk) {
       cb_p = std::chrono::duration<double, std::milli>(
              std::chrono::steady_clock::now().time_since_epoch()).count();
 #endif
-      ityr::ito::flush_window_data(rep.acc[inter], n * sizeof(ForceResult));   // order for intra peers
+      if (acc_window) {
+        ityr::common::cache_flush(rep.acc[inter], n * sizeof(ForceResult));
+        MPI_Win_sync(g_acc_win);
+      } else {
+        ityr::ito::flush_window_data(rep.acc[inter], n * sizeof(ForceResult));   // order for intra peers
+      }
 #ifdef ITYR_PROF
       if (cb_leader) cb_fl2 = std::chrono::duration<double, std::milli>(
                       std::chrono::steady_clock::now().time_since_epoch()).count() - cb_p;
@@ -1678,23 +1749,22 @@ void combine_accel(NodeRepPointers& rep, size_t n, size_t chunk) {
 #endif
 }
 
+// Collective on the node leaders: release the multi-node arena accel window.
+inline void free_acc_window() {
+  if (g_acc_win == MPI_WIN_NULL) return;
+  auto& topo = ityr::common::topology::instance::get();
+  if (topo.intra_my_rank() == 0) {
+    MPI_Win_unlock_all(g_acc_win);
+    MPI_Win_free(&g_acc_win);
+  }
+  g_acc_win = MPI_WIN_NULL;
+}
+
 // ---------------- integrate / bounds (slice-local) ----------------
 
-// SPMD. Kick (and optionally drift) this node's live slice in place, reading
-// acc for the slice's bodies from the node-local accel buffer (complete after
-// combine_accel). The leapfrog applies each acceleration as two half-kicks —
-// one at the end of the step that produced it, one at the start of the next
-// step — and both read the same acc array; fusing them into one pass performs
-// the same per-body operations in the same order while saving a pass over the
-// bodies + acc per step. `half_kicks` says how many of them this call performs:
-//   step 1         -> 1 (a_0 has no trailing kick: step 0 is outside the schedule)
-//   step k >= 2    -> 2 (a_{k-1}'s trailing kick fused with its leading kick)
-//   after the loop -> 1 (a_S's trailing kick)
-// The drift must use the velocity after all the half-kicks of this call — that
-// is what the sequential kick(); drift() sequence does; passing 2 at step 1
-// would double-apply a_0. Also computes min/max over this node's slice of the
-// (drifted) positions, so the caller can Allreduce them into the next build's
-// bounds (min/max are order-independent, so any split is exact).
+// Kick and optionally drift this node's live slice from its accel buffer.
+// half_kicks is 1 at step 1 and after the loop, 2 for later steps. Also
+// returns the drifted position bounds.
 void kick_live(BuildReplicas& r, ForceResult* acc_rep[], int half_kicks, bool drift,
                Extremes* ex = nullptr) {
   const int inter = ityr::common::topology::inter_rank(ityr::my_rank());
@@ -1733,7 +1803,9 @@ void kick_live(BuildReplicas& r, ForceResult* acc_rep[], int half_kicks, bool dr
       zmin = std::min(zmin, b[i].z); zmax = std::max(zmax, b[i].z);
     }
   }
-  if (ex) *ex = {xmin, xmax, ymin, ymax, zmin, zmax};
+  const double inf = std::numeric_limits<double>::infinity();
+  if (ex) *ex = ex_first ? Extremes{inf, -inf, inf, -inf, inf, -inf}
+                         : Extremes{xmin, xmax, ymin, ymax, zmin, zmax};
 #ifdef ITYR_PROF
   t_pkloop.stop();
   t_pkflush.start();
@@ -1751,9 +1823,12 @@ Bounds bounds_from_replica(BuildReplicas& rep) {
   const int intra = ityr::common::topology::intra_rank(ityr::my_rank());
   const int nintra = ityr::common::topology::intra_n_ranks();
   size_t lo = (size_t)intra * rep.L.nslice / nintra, hi = (size_t)(intra + 1) * rep.L.nslice / nintra;
-  double xmin = b[lo].x, xmax = b[lo].x, ymin = b[lo].y, ymax = b[lo].y;
-  double zmin = b[lo].z, zmax = b[lo].z;
-  for (size_t i = lo + 1; i < hi; ++i) {
+  // The layout can leave a rank with an empty slice (small n / many nodes or
+  // ranks). Use neutral extrema: -xmin = -inf and xmax = -inf never win the
+  // MPI_MAX against a non-empty rank's real values.
+  const double inf = std::numeric_limits<double>::infinity();
+  double xmin = inf, xmax = -inf, ymin = inf, ymax = -inf, zmin = inf, zmax = -inf;
+  for (size_t i = lo; i < hi; ++i) {
     xmin = std::min(xmin, b[i].x); xmax = std::max(xmax, b[i].x);
     ymin = std::min(ymin, b[i].y); ymax = std::max(ymax, b[i].y);
     zmin = std::min(zmin, b[i].z); zmax = std::max(zmax, b[i].z);
@@ -1769,16 +1844,9 @@ Bounds bounds_from_replica(BuildReplicas& rep) {
 
 // ---------------- energy (canonical blocked sums) ----------------
 
-// SPMD. Every ENERGY_BLOCK block sum is computed serially, in index order, by
-// exactly one rank reading local memory; the per-node partials travel in a
-// tiny Allgather (2*nblocks doubles per node), and the master tree_combines
-// the block sums in the canonical order (see blocked_sum in
-// barneshut_common.hpp). Each block sum is the same serial sum over identical
-// bytes: EK from the slice-owning node's live slice, EP from any node's
-// complete acc replica. So the result matches the sequential program.
-// Requires slice boundaries (build_cutoff) to be multiples of ENERGY_BLOCK so
-// an EK block never spans two slices; otherwise the master-gather fallback
-// runs (correct for any build_cutoff).
+// Blocked energy sums in canonical order. With ENERGY_BLOCK-aligned slices,
+// each block is owned by one node and the partials are combined on the master;
+// otherwise the master-gather fallback is used.
 std::pair<double, double> energy_phase(BuildReplicas& r, const NodeRepPointers& accs,
                                        MasterBuild& m, size_t n) {
   auto& topo = ityr::common::topology::instance::get();
@@ -1933,25 +2001,53 @@ int main(int argc, char** argv) {
   if (a == Args::error) return 1;
   if (a == Args::help) return 0;
 
-  setenv("ITYR_ITO_SUSPENDED_THREAD_ALLOCATOR_SIZE", "536870912", 1);
-  setenv("ITYR_ITO_THREAD_STATE_ALLOCATOR_SIZE", "536870912", 1);
-  setenv("ITYR_ITO_WSQUEUE_CAPACITY", "32768", 1);
+  // Small per-rank windows; large arrays are in the node arena. Explicit
+  // environment settings still win.
+  setenv("ITYR_ITO_FUTURE_POOL_SIZE", "67108864", 0);
+  setenv("ITYR_ITO_SUSPENDED_THREAD_ALLOCATOR_SIZE", "8388608", 0);
+  setenv("ITYR_ITO_THREAD_STATE_ALLOCATOR_SIZE", "8388608", 0);
+  setenv("ITYR_ITO_WSQUEUE_CAPACITY", "8192", 0);
 
   ityr::init();
 
+  // 64 GiB per node fits the 32M benchmark; set BARNESHUT_NODE_ARENA_MB=0 to
+  // use the future pool instead.
+  long long arena_mb = 65536;
+  if (const char* arena_env = getenv("BARNESHUT_NODE_ARENA_MB"))
+    arena_mb = atoll(arena_env);
+  if (arena_mb > 0) {
+    g_node_arena = make_unique<NodeArena>((size_t)arena_mb * 1024 * 1024);
+    if (ityr::is_master())
+      printf("# node arena: %lld MiB per node, %d node(s), %d rank(s)\n",
+             arena_mb, (int)ityr::common::topology::inter_n_ranks(),
+             (int)ityr::n_ranks());
+  }
+  if (g_node_arena && ityr::is_master()) {
+    const size_t pool_mib = ityr::ito::future_pool_size_option::value() / 1048576;
+    const size_t susp_mib = ityr::ito::suspended_thread_allocator_size_option::value() / 1048576;
+    printf("# per-rank windows: future %zu MiB, suspended %zu MiB, ranks %d\n",
+           pool_mib, susp_mib, (int)ityr::n_ranks());
+    if (pool_mib > 128)
+      fprintf(stderr,
+              "# WARNING: arena mode with a %zu MiB future pool creates %zu MiB of "
+              "MPI windows on this node; use 64 MiB unless the HCA limit allows it\n",
+              pool_mib, pool_mib * (size_t)ityr::n_ranks());
+  }
+
+  // Input/setup: read, allocate, and distribute. Excluded from step time.
   w_total.start();
   w_input.start();
   auto in = ityr::root_exec([=]() -> pair<Body64*, size_t> {
     vector<Body64> v;
     if (!read_input_t(cfg.input, v)) return {nullptr, 0};
-    auto* buf = (Body64*)ityr::ito::alloc_future_data(v.size() * sizeof(Body64));
+    auto* buf = (Body64*)alloc_node(v.size() * sizeof(Body64));
     memcpy(buf, v.data(), v.size() * sizeof(Body64));
     return {buf, v.size() * sizeof(Body64)};
   });
   ityr::ito::flush_copy_cache();
-  w_input.stop();
   size_t n = in.second / sizeof(Body64);
   if (n == 0) {
+    w_input.stop();
     ityr::fini();
     return 1;
   }
@@ -1965,15 +2061,17 @@ int main(int argc, char** argv) {
   MasterBuild m;
   if (ityr::is_master()) {
     m.keys = rep.keys;   // the master's keys replica is the merge output
-    m.bodies = (Body64*)ityr::ito::alloc_future_data(n * sizeof(Body64));
-    m.compact = (CompactBody*)ityr::ito::alloc_future_data(n * sizeof(CompactBody));
-    m.vel_scratch = (double*)ityr::ito::alloc_future_data(n * 4 * sizeof(double));
+    m.compact = (CompactBody*)alloc_node(n * sizeof(CompactBody));
+    // Optional buffers: do not pay for them in the timing configuration
+    // (--no-output, no brute force, default cutoff divisible by ENERGY_BLOCK).
+    if (cfg.output || cfg.brute_force)
+      m.bodies = (Body64*)alloc_node(n * sizeof(Body64));
+    if (cfg.build_cutoff % ENERGY_BLOCK != 0)
+      m.vel_scratch = (double*)alloc_node(n * 4 * sizeof(double));
     m.owns = true;
   }
 
-  // One persistent accel buffer per node, allocated once. The force leaves
-  // write into it directly, combine_accel() completes it across nodes, and the
-  // kick + master's ep/output read it.
+  // Per-node accel buffer; combine_accel() completes it across nodes.
   NodeRepPointers accs{};
   void* my_acc = nullptr;
   size_t acc_bytes = 0;
@@ -1982,13 +2080,10 @@ int main(int argc, char** argv) {
   bool owns_cmask = false;
   alloc_node_accel(n, accs, my_acc, owns_acc, acc_bytes, my_cmask, owns_cmask);
 
-  // Per-node persistent compact replica: every intra rank folds its own share
-  // into it, so all ranks of a node must share one buffer. On the master it is
-  // m.compact, and the alias must happen before the pointer broadcast or the
-  // peers write an orphaned buffer.
+  // Per-node compact replica, shared by all ranks on the node.
   void* my_compact = nullptr;
   if (ityr::common::topology::intra_my_rank() == 0 && !ityr::is_master()) {
-    my_compact = ityr::ito::alloc_future_data(n * sizeof(CompactBody));
+    my_compact = alloc_node(n * sizeof(CompactBody));
   }
   if (ityr::is_master()) my_compact = m.compact;
   CompactBody* compact_table[MAX_INTER_NODES] = {};
@@ -2002,12 +2097,25 @@ int main(int argc, char** argv) {
     for (int i = 0; i < MAX_INTER_NODES; ++i) compact_table[i] = (CompactBody*)cbuf[i];
   }
 
-  // Distribute the input across the live slices (read on one node, distribute).
+  // Read on one node, then distribute.
   scatter_input(in.first, rep.L, rep.live);
+  // Release the input before the tree allocation.
+  if (ityr::is_master() && in.first) {
+    free_node(in.first, n * sizeof(Body64));
+    in.first = nullptr;
+  }
+  if (g_node_arena) g_node_arena->mark_persistent();
+  w_input.stop();
+
+  // Keep setup collectives out of the step counter.
+  const double setup_collective_ms = t_collective.ms;
+  const double setup_ptr_ms = tc_ptr.ms;
+  const double setup_misc_ms = tc_misc.ms;
 
   if (cfg.brute_force) {
     Bounds bd = bounds_from_replica(rep);
-    BuildResult br = build_step(rep, n, true, in.first, bd, compact_table);
+    if (g_node_arena) g_node_arena->reset_step();
+    BuildResult br = build_step(rep, n, bd, compact_table);
     NodeReplicas reps = make_node_replicas(br, (CompactBody*)my_compact, accs);
     zero_node_accel(accs, n);
     w_forces.start();
@@ -2046,31 +2154,41 @@ int main(int argc, char** argv) {
       code = brute_force_check(fat.data(), n, ep_walk);
     }
     collective_timed_cat(tc_misc, [&] { ityr::common::mpi_bcast(&code, 1, 0, MPI_COMM_WORLD); });
-    if (owns_acc) ityr::ito::dealloc_future_data(my_acc, acc_bytes);
-    if (owns_cmask) ityr::ito::dealloc_future_data(my_cmask,
+    if (owns_acc) free_node(my_acc, acc_bytes);
+    if (owns_cmask) free_node(my_cmask,
                        ((n + cfg.chunk - 1) / cfg.chunk + 63) / 64 * sizeof(uint64_t));
     if (rep.owns) {
-      ityr::ito::dealloc_future_data(rep.live, rep.live_bytes);
-      ityr::ito::dealloc_future_data(rep.keys, rep.keys_bytes);
-      ityr::ito::dealloc_future_data(rep.run, rep.L.nslice * sizeof(KeyPair));
-      ityr::ito::dealloc_future_data(rep.pairs, rep.L.nslice * sizeof(GatherPair));
-      ityr::ito::dealloc_future_data(rep.recv, rep.L.nslice * sizeof(GatherPair));
-      ityr::ito::dealloc_future_data(rep.gkeys, n * sizeof(uint64_t));
-      ityr::ito::dealloc_future_data(rep.krun, rep.L.nslice * sizeof(uint64_t));
-      if (rep.mbufA) ityr::ito::dealloc_future_data(rep.mbufA, n * sizeof(MergeTriple));
-      if (rep.mbufB) ityr::ito::dealloc_future_data(rep.mbufB, n * sizeof(MergeTriple));
+      if (rep.live) free_node(rep.live, rep.live_bytes);
+      if (rep.keys) free_node(rep.keys, rep.keys_bytes);
+      if (rep.run) free_node(rep.run, rep.L.nslice * sizeof(KeyPair));
+      if (rep.pairs) free_node(rep.pairs, rep.L.nslice * sizeof(GatherPair));
+      if (rep.recv) free_node(rep.recv, rep.L.nslice * sizeof(GatherPair));
+      if (rep.gkeys) free_node(rep.gkeys, n * sizeof(uint64_t));
+      if (rep.krun) free_node(rep.krun, rep.L.nslice * sizeof(uint64_t));
+      if (rep.mypos) free_node(rep.mypos, rep.L.nslice * sizeof(uint32_t));
+      if (rep.mbufA) free_node(rep.mbufA, n * sizeof(MergeTriple));
+      if (rep.mbufB) free_node(rep.mbufB, n * sizeof(MergeTriple));
     }
     if (m.owns) {
-      ityr::ito::dealloc_future_data(m.bodies, n * sizeof(Body64));
-      ityr::ito::dealloc_future_data(m.compact, n * sizeof(CompactBody));
-      ityr::ito::dealloc_future_data(m.vel_scratch, n * 4 * sizeof(double));
+      if (m.bodies) free_node(m.bodies, n * sizeof(Body64));
+      if (m.compact) free_node(m.compact, n * sizeof(CompactBody));
+      if (m.vel_scratch) free_node(m.vel_scratch, n * 4 * sizeof(double));
     }
+    if (g_node_arena && ityr::is_master())
+      printf("# node arena high-water: %.1f / %.1f MiB\n",
+             g_node_arena->high_water() / 1048576.0,
+             g_node_arena->capacity() / 1048576.0);
+    free_acc_window();
     ityr::fini();
     return code;
   }
 
   double box_side;
   double ek = 0, ep = 0, et0 = 0;
+  // Output is excluded from step time.
+  double output_collective_ms = 0.0;
+  double output_ptr_ms = 0.0;
+  double output_misc_ms = 0.0;
   for (int step = 0; step <= cfg.steps; ++step) {
     // The next build's bounds come from the fused kick (the drift loop already
     // touches every position). min/max are exact, so the Allreduce result is
@@ -2094,7 +2212,8 @@ int main(int argc, char** argv) {
       bd = bounds_from_replica(rep);
     }
 
-    BuildResult br = build_step(rep, n, step == 0, in.first, bd, compact_table);
+    if (g_node_arena) g_node_arena->reset_step();
+    BuildResult br = build_step(rep, n, bd, compact_table);
     box_side = br.box_side;
     NodeReplicas reps = make_node_replicas(br, (CompactBody*)my_compact, accs);
 
@@ -2144,7 +2263,7 @@ int main(int argc, char** argv) {
     if (step == 0) {
       et0 = ek + ep;
       if (ityr::is_master()) {
-        printf("# N=%d theta=%.3f eps2=%.1e leaf=%d dt=%.3e G=%.3f chunk=%d ranks=%d simd=%s\n",
+        printf("# N=%d theta=%.3f eps2=%.1e leaf=%d dt=%.3e G=%.6e chunk=%d ranks=%d simd=%s\n",
                (int)n, cfg.theta, cfg.eps2, cfg.leaf, cfg.dt, cfg.G, (int)cfg.chunk,
                (int)ityr::n_ranks(), forceN_isa_name());
         printf("%8s %18s %18s %18s %12s\n", "step", "EK", "EP", "ET", "dET/ET");
@@ -2155,13 +2274,20 @@ int main(int argc, char** argv) {
       report_energy(step, ek, ep, et0);
 
     if (cfg.output && (step == 0 || (cfg.output_every > 0 && step % cfg.output_every == 0))) {
-      gather_full_bodies(rep.L, rep.live, m.bodies);
+      // Include the gather and flush in the excluded output phase.
+      const double coll0 = t_collective.ms;
+      const double ptr0 = tc_ptr.ms;
+      const double misc0 = tc_misc.ms;
       w_output.start();
+      gather_full_bodies(rep.L, rep.live, m.bodies);
       ityr::root_exec([=] {
         if (ityr::is_master()) output_phase(m.bodies, accs.acc[0], n, step);
       });
       ityr::ito::flush_copy_cache();
       w_output.stop();
+      output_collective_ms += t_collective.ms - coll0;
+      output_ptr_ms += tc_ptr.ms - ptr0;
+      output_misc_ms += tc_misc.ms - misc0;
     }
 
     // The trailing half-kick is fused into the next iteration's kick_live;
@@ -2177,39 +2303,52 @@ int main(int argc, char** argv) {
     w_integrate.stop();
   }
 
-  if (owns_acc) ityr::ito::dealloc_future_data(my_acc, acc_bytes);
-  if (owns_cmask) ityr::ito::dealloc_future_data(my_cmask,
+  if (owns_acc) free_node(my_acc, acc_bytes);
+  if (owns_cmask) free_node(my_cmask,
                      ((n + cfg.chunk - 1) / cfg.chunk + 63) / 64 * sizeof(uint64_t));
   if (rep.owns) {
-    ityr::ito::dealloc_future_data(rep.live, rep.live_bytes);
-    ityr::ito::dealloc_future_data(rep.keys, rep.keys_bytes);
-    ityr::ito::dealloc_future_data(rep.run, rep.L.nslice * sizeof(KeyPair));
-    ityr::ito::dealloc_future_data(rep.pairs, rep.L.nslice * sizeof(GatherPair));
-    ityr::ito::dealloc_future_data(rep.recv, rep.L.nslice * sizeof(GatherPair));
-    ityr::ito::dealloc_future_data(rep.gkeys, n * sizeof(uint64_t));
-    ityr::ito::dealloc_future_data(rep.krun, rep.L.nslice * sizeof(uint64_t));
-    if (rep.mbufA) ityr::ito::dealloc_future_data(rep.mbufA, n * sizeof(MergeTriple));
-    if (rep.mbufB) ityr::ito::dealloc_future_data(rep.mbufB, n * sizeof(MergeTriple));
+    if (rep.live) free_node(rep.live, rep.live_bytes);
+    if (rep.keys) free_node(rep.keys, rep.keys_bytes);
+    if (rep.run) free_node(rep.run, rep.L.nslice * sizeof(KeyPair));
+    if (rep.pairs) free_node(rep.pairs, rep.L.nslice * sizeof(GatherPair));
+    if (rep.recv) free_node(rep.recv, rep.L.nslice * sizeof(GatherPair));
+    if (rep.gkeys) free_node(rep.gkeys, n * sizeof(uint64_t));
+    if (rep.krun) free_node(rep.krun, rep.L.nslice * sizeof(uint64_t));
+    if (rep.mypos) free_node(rep.mypos, rep.L.nslice * sizeof(uint32_t));
+    if (rep.mbufA) free_node(rep.mbufA, n * sizeof(MergeTriple));
+    if (rep.mbufB) free_node(rep.mbufB, n * sizeof(MergeTriple));
   }
   if (ityr::common::topology::intra_my_rank() == 0 && my_compact != m.compact)
-    ityr::ito::dealloc_future_data(my_compact, n * sizeof(CompactBody));
+    free_node(my_compact, n * sizeof(CompactBody));
   if (m.owns) {
-    ityr::ito::dealloc_future_data(m.bodies, n * sizeof(Body64));
-    ityr::ito::dealloc_future_data(m.compact, n * sizeof(CompactBody));
-    ityr::ito::dealloc_future_data(m.vel_scratch, n * 4 * sizeof(double));
+    if (m.bodies) free_node(m.bodies, n * sizeof(Body64));
+    if (m.compact) free_node(m.compact, n * sizeof(CompactBody));
+    if (m.vel_scratch) free_node(m.vel_scratch, n * 4 * sizeof(double));
   }
 
+  if (g_node_arena && ityr::is_master())
+    printf("# node arena high-water: %.1f / %.1f MiB\n",
+           g_node_arena->high_water() / 1048576.0,
+           g_node_arena->capacity() / 1048576.0);
+
   w_total.stop();
+  // Strip setup and output collectives from the step breakdown.
+  const double step_collective_ms =
+      std::max(0.0, t_collective.ms - setup_collective_ms - output_collective_ms);
+  const double step_ptr_ms =
+      std::max(0.0, tc_ptr.ms - setup_ptr_ms - output_ptr_ms);
+  const double step_misc_ms =
+      std::max(0.0, tc_misc.ms - setup_misc_ms - output_misc_ms);
   double wloc[7] = {w_input.ms, w_build.ms, w_forces.ms, w_integrate.ms, w_output.ms,
-                    w_total.ms, t_collective.ms};
+                    w_total.ms, step_collective_ms};
   double wmax[7];
   collective_timed([&] { MPI_Allreduce(wloc, wmax, 7, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD); });
   if (ityr::is_master() && cfg.timers)
     printf("timings (ms): input %.2f  build %.2f  forces+energy %.2f  integrate %.2f  "
            "collective %.2f (max-rank %.2f | dist %.2f bar %.2f energy %.2f ptr %.2f misc %.2f)"
            "  output %.2f  total %.2f\n",
-           wmax[0], wmax[1], wmax[2], wmax[3], t_collective.ms, wmax[6],
-           tc_dist.ms, tc_bar.ms, tc_energy.ms, tc_ptr.ms, tc_misc.ms, wmax[4], wmax[5]);
+           wmax[0], wmax[1], wmax[2], wmax[3], step_collective_ms, wmax[6],
+           tc_dist.ms, tc_bar.ms, tc_energy.ms, step_ptr_ms, step_misc_ms, wmax[4], wmax[5]);
 
 #ifdef ITYR_PROF
   {
@@ -2234,6 +2373,7 @@ int main(int argc, char** argv) {
   }
 #endif
 
+  free_acc_window();
   ityr::fini();
   return 0;
 }

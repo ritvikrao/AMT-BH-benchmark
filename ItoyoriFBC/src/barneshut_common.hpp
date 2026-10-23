@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <type_traits>
@@ -47,7 +48,7 @@ struct Node {
 struct Config {
   string input;
   string prefix = "snapshot";
-  int steps = 100, output_every = 10, energy_every = 1, leaf = 8;
+  int steps = 100, output_every = 10, energy_every = 1, leaf = 10;
   size_t chunk = 1024, build_cutoff = 32768;
   double dt = 0.01, theta = 0.5, eps2 = 1e-6, G = 1.0;
   bool output = true, timers = true, brute_force = false;
@@ -518,7 +519,7 @@ inline void usage() {
          "  --dt T             timestep (default 0.01)\n"
          "  --theta T          Barnes-Hut opening angle (default 0.5; 0 = exact)\n"
          "  --eps2 T           softening epsilon^2 (default 1e-6)\n"
-         "  --leaf N           max bodies per leaf node (default 8)\n"
+         "  --leaf N           max bodies per leaf node (default 10)\n"
          "  --G T              gravitational constant (default 1.0)\n"
          "  --chunk N          bodies per force leaf task (default 1024)\n"
          "  --build-cutoff N   tree task cutoff + per-node slice granularity (default 32768)\n"
