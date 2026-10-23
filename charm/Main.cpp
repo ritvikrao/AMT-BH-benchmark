@@ -94,7 +94,7 @@ void Main::setParameters(CkArgMsg *m){
   globalParams.dthf = globalParams.dtime/2.0;
 
   globalParams.epssq = params.getrparam("eps", DEFAULT_EPS, table);
-  CkPrintf("eps: %f\n", globalParams.epssq);
+  CkPrintf("eps: %g\n", globalParams.epssq);
   globalParams.epssq = globalParams.epssq*globalParams.epssq;
 
   globalParams.tolsq = globalParams.theta;
@@ -116,6 +116,31 @@ void Main::setParameters(CkArgMsg *m){
   globalParams.yieldPeriod = params.getiparam("yield", DEFAULT_YIELD_PERIOD, table);
   CkPrintf("yieldPeriod: %d\n", globalParams.yieldPeriod);
 
+  globalParams.walkGroupParticles = params.getiparam("walkgroup", DEFAULT_WALK_GROUP_PARTICLES, table);
+  CkPrintf("walkgroup: %d\n", globalParams.walkGroupParticles);
+
+  string walk = params.getsparam("walk", table);
+  if(walk.empty()) walk = DEFAULT_WALK;
+  if(walk != "packet" && walk != "list" && walk != "auto"){
+    CkPrintf("[Main] -walk=%s: expected 'packet', 'list' or 'auto'\n", walk.c_str());
+    CkAbort("bad command line arguments\n");
+  }
+  // auto: the packet walk for small buckets, where it is faster (1.3x at
+  // one particle per bucket), the lists from five particles up, where they
+  // match or beat it (4M bodies, 120 PEs, leaf 10: 0.320 vs 0.325 s/step).
+  if(walk == "auto") walk = (globalParams.ppb <= AUTO_PACKET_MAX_BUCKET) ? "packet" : "list";
+  globalParams.packetWalk = (walk == "packet");
+  CkPrintf("walk: %s\n", walk.c_str());
+
+  string balance = params.getsparam("balance", table);
+  if(balance.empty()) balance = "count";
+  if(balance != "cost" && balance != "count"){
+    CkPrintf("[Main] -balance=%s: expected 'cost' or 'count'\n", balance.c_str());
+    CkAbort("bad command line arguments\n");
+  }
+  globalParams.balanceByCost = (balance == "cost");
+  CkPrintf("balance: %s\n", balance.c_str());
+
   it = table.find("timers");
   string timerSpec = (it == table.end()) ? string(DEFAULT_TIMERS) : it->second;
   string badPhase;
@@ -127,6 +152,14 @@ void Main::setParameters(CkArgMsg *m){
     CkAbort("bad command line arguments\n");
   }
   CkPrintf("timers: %s\n", timerSpec.c_str());
+
+  globalParams.dumpStep = params.getiparam("dumpstep", -1, table);
+  globalParams.dumpPrefix = params.getsparam("dumpprefix", table);
+  if(globalParams.dumpPrefix.empty()) globalParams.dumpPrefix = "forces";
+  if(globalParams.dumpStep >= 0){
+    CkPrintf("dump: forces at step %d to %s_step%d_pe*.bin\n", globalParams.dumpStep,
+             globalParams.dumpPrefix.c_str(), globalParams.dumpStep);
+  }
 
   globalParams.output.prefix = params.getsparam("output", table);
   globalParams.output.frequency =
@@ -307,8 +340,7 @@ void Main::commence(){
   dataManagerProxy.loadParticles(CkCallbackResumeThread((void *&)redMsg));
 
   BoundingBox &universe = *((BoundingBox *)redMsg->getData());
-  Real pad = 0.001;
-  universe.expand(pad);
+  universe.expand(UNIVERSE_PAD);
   CkPrintf("[Main] universe bb: %f %f %f %f %f %f\n",
                                 universe.box.lesser_corner.x,
                                 universe.box.lesser_corner.y,

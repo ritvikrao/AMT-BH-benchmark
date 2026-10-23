@@ -1,0 +1,125 @@
+Step 3b (moments skeleton: refine multi-owner nodes only where the PE has particles) on Stampede3
+idev job 3605652, skx-dev, c454-[013,043,072],c455-031, 2026-10-16; 2x23 PEs per node (one process per socket)
+barnes-3b (built from the commit that adds this file) against barnes-4b245f1; Charm++ ~/charm_reconverse (reconverse-specific-build 6841dfe62, Reconverse aa1bd88)
+2M bodies, 10 steps, -ppc=2000, theta 0.5; inputs from scripts/gendata.sh (DataGenerator 15afd52)
+
+$ compare_energy.py --tol 1e-10 <old 1x8> <old layouts...> <new layouts...>
+run                                                          steps        dK        dP spikes     drift
+4b245f1corr_n2000000_N1_c8_p1x8_r1.log                          10  0.00e+00  0.00e+00      0  3.15e-06
+4b245f1corr_n2000000_N1_c46_p2x23_r1.log                        10  0.00e+00  0.00e+00      0  3.15e-06
+4b245f1corr_n2000000_N2_c92_p4x23_r1.log                        10  0.00e+00  0.00e+00      0  3.15e-06
+4b245f1corr_n2000000_N4_c176_p16x11_r1.log                      10  0.00e+00  0.00e+00      0  3.15e-06
+4b245f1corr_n2000000_N4_c184_p8x23_r1.log                       10  0.00e+00  0.00e+00      0  3.15e-06
+4b245f1corr_n2000000_N4_c176_p16x11_r1.log                      10  0.00e+00  0.00e+00      0  3.15e-06
+3bcorr_n2000000_N1_c46_p2x23_r1.log                             10  0.00e+00  0.00e+00      0  3.15e-06
+3bcorr_n2000000_N1_c8_p1x8_r1.log                               10  0.00e+00  0.00e+00      0  3.15e-06
+3bcorr_n2000000_N2_c92_p4x23_r1.log                             10  0.00e+00  0.00e+00      0  3.15e-06
+3bcorr_n2000000_N4_c176_p16x11_r1.log                           10  0.00e+00  0.00e+00      0  3.15e-06
+3bcorr_n2000000_N4_c184_p8x23_r1.log                            10  0.00e+00  0.00e+00      0  3.15e-06
+
+$ compare_forces.py old vs new, N1_1x8, step 9
+2000000 particles; positions identical: 1999474
+|da|/|a|   median 0.00e+00  p99 3.39e-16  max 2.90e-14
+dphi/phi   median 0.00e+00  p99 2.85e-16  max 2.11e-15
+identical  1758922 of 2000000
+sum m*phi/2: ref -1.2334064565e-06  test -1.2334064565e-06
+worst |da|/|a|:
+  id   1053570  2.905e-14  |a| 1.065e-13  dphi/phi 0.00e+00
+  id     31147  1.428e-14  |a| 1.074e-13  dphi/phi 0.00e+00
+  id   1007683  1.024e-14  |a| 1.006e-13  dphi/phi 0.00e+00
+  id   1017302  7.401e-15  |a| 3.823e-13  dphi/phi 0.00e+00
+  id    185920  5.685e-15  |a| 2.276e-13  dphi/phi 3.14e-16
+
+$ compare_forces.py old vs new, N1_2x23, step 9
+2000000 particles; positions identical: 1998469
+|da|/|a|   median 0.00e+00  p99 7.55e-16  max 1.90e-14
+dphi/phi   median 0.00e+00  p99 6.78e-16  max 5.21e-15
+identical  1296551 of 2000000
+sum m*phi/2: ref -1.2334064565e-06  test -1.2334064565e-06
+worst |da|/|a|:
+  id   1087333  1.895e-14  |a| 1.283e-13  dphi/phi 0.00e+00
+  id    496139  1.835e-14  |a| 9.047e-14  dphi/phi 0.00e+00
+  id   1379147  1.456e-14  |a| 5.871e-14  dphi/phi 0.00e+00
+  id    917259  1.429e-14  |a| 2.699e-13  dphi/phi 4.72e-16
+  id    669279  1.420e-14  |a| 1.473e-13  dphi/phi 0.00e+00
+
+$ compare_forces.py old vs new, N2_2x23, step 9
+2000000 particles; positions identical: 1997999
+|da|/|a|   median 0.00e+00  p99 9.36e-16  max 3.30e-14
+dphi/phi   median 0.00e+00  p99 8.44e-16  max 5.41e-15
+identical  1110802 of 2000000
+sum m*phi/2: ref -1.2334064565e-06  test -1.2334064565e-06
+worst |da|/|a|:
+  id   1971597  3.296e-14  |a| 1.830e-13  dphi/phi 5.20e-16
+  id   1402295  3.121e-14  |a| 2.393e-13  dphi/phi 1.21e-15
+  id     49716  1.775e-14  |a| 1.233e-13  dphi/phi 4.71e-16
+  id   1262222  1.727e-14  |a| 7.468e-14  dphi/phi 3.14e-16
+  id   1019656  1.686e-14  |a| 6.130e-14  dphi/phi 3.14e-16
+
+$ compare_forces.py old vs new, N4_2x23, step 9
+2000000 particles; positions identical: 1996811
+|da|/|a|   median 1.29e-16  p99 1.23e-15  max 2.00e-14
+dphi/phi   median 0.00e+00  p99 1.31e-15  max 5.12e-15
+identical  386041 of 2000000
+sum m*phi/2: ref -1.2334064565e-06  test -1.2334064565e-06
+worst |da|/|a|:
+  id   1053570  2.005e-14  |a| 1.065e-13  dphi/phi 0.00e+00
+  id   1974153  1.725e-14  |a| 1.916e-13  dphi/phi 3.47e-16
+  id   1655332  1.435e-14  |a| 9.892e-14  dphi/phi 3.46e-16
+  id    917259  1.338e-14  |a| 2.699e-13  dphi/phi 1.57e-16
+  id     31147  1.312e-14  |a| 1.074e-13  dphi/phi 4.71e-16
+
+$ compare_forces.py old vs new, N4_4x11, step 9
+2000000 particles; positions identical: 1997124
+|da|/|a|   median 8.26e-17  p99 1.26e-15  max 3.76e-14
+dphi/phi   median 0.00e+00  p99 1.26e-15  max 6.41e-15
+identical  705090 of 2000000
+sum m*phi/2: ref -1.2334064565e-06  test -1.2334064565e-06
+worst |da|/|a|:
+  id   1019656  3.758e-14  |a| 6.130e-14  dphi/phi 0.00e+00
+  id    793062  2.195e-14  |a| 1.018e-13  dphi/phi 0.00e+00
+  id   1053570  1.572e-14  |a| 1.065e-13  dphi/phi 0.00e+00
+  id     31147  1.480e-14  |a| 1.074e-13  dphi/phi 0.00e+00
+  id    936746  1.208e-14  |a| 4.759e-14  dphi/phi 1.57e-16
+
+$ compare_forces.py new 1x8 vs new N4_2x23, step 9
+2000000 particles; positions identical: 1987615
+|da|/|a|   median 7.52e-16  p99 3.10e-15  max 7.31e-14
+dphi/phi   median 4.33e-16  p99 2.79e-15  max 7.31e-15
+identical  26195 of 2000000
+sum m*phi/2: ref -1.2334064565e-06  test -1.2334064565e-06
+worst |da|/|a|:
+  id    405135  7.313e-14  |a| 5.181e-14  dphi/phi 2.20e-15
+  id    818276  4.048e-14  |a| 7.957e-14  dphi/phi 1.26e-15
+  id   1027337  3.321e-14  |a| 9.080e-14  dphi/phi 1.57e-16
+  id    452881  2.680e-14  |a| 7.807e-14  dphi/phi 2.20e-15
+  id    620864  2.561e-14  |a| 1.732e-13  dphi/phi 9.42e-16
+
+$ compare_forces.py new 1x8 vs new N4_4x11, step 9
+2000000 particles; positions identical: 1987693
+|da|/|a|   median 7.46e-16  p99 3.09e-15  max 6.45e-14
+dphi/phi   median 4.25e-16  p99 2.78e-15  max 7.47e-15
+identical  23952 of 2000000
+sum m*phi/2: ref -1.2334064565e-06  test -1.2334064565e-06
+worst |da|/|a|:
+  id    405135  6.450e-14  |a| 5.181e-14  dphi/phi 2.20e-15
+  id    496139  3.340e-14  |a| 9.047e-14  dphi/phi 1.57e-16
+  id   1027337  3.107e-14  |a| 9.080e-14  dphi/phi 3.14e-16
+  id   1019656  3.031e-14  |a| 6.130e-14  dphi/phi 1.73e-15
+  id    818276  3.030e-14  |a| 7.957e-14  dphi/phi 1.73e-15
+
+Seconds per step, median of 2, 10 steps; phases are maxima over PEs (per step)
+| bodies | nodes | binary | s/step | speedup | decomposition | tree build | traversal |
+|---|---|---|---|---|---|---|---|
+| 2M | 1 | 4b245f1 | 1.413 |  | 0.067 | 0.427 | 0.934 |
+| 2M | 1 | 3b | 1.051 | 1.34x | 0.049 | 0.017 | 0.985 |
+| 2M | 2 | 4b245f1 | 1.318 |  | 0.042 | 0.599 | 0.705 |
+| 2M | 2 | 3b | 0.794 | 1.66x | 0.038 | 0.012 | 0.746 |
+| 2M | 4 | 4b245f1 | 1.261 |  | 0.050 | 0.754 | 0.548 |
+| 2M | 4 | 3b | 0.683 | 1.85x | 0.037 | 0.013 | 0.637 |
+| 8M | 1 | 4b245f1 | 4.495 |  | 0.399 | 1.649 | 2.576 |
+| 8M | 1 | 3b | 2.980 | 1.51x | 0.268 | 0.105 | 2.659 |
+| 8M | 2 | 4b245f1 | 4.228 |  | 0.126 | 2.304 | 1.829 |
+| 8M | 2 | 3b | 2.020 | 2.09x | 0.121 | 0.044 | 1.868 |
+| 8M | 4 | 4b245f1 | 3.910 |  | 0.130 | 2.814 | 1.245 |
+| 8M | 4 | 3b | 1.383 | 2.83x | 0.078 | 0.025 | 1.286 |

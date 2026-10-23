@@ -167,4 +167,44 @@ class PhaseTimers {
   }
 };
 
+// -DPE_DIAG: where each PE's traversal time goes. The phase timers say how long
+// the traversal phase lasted on the slowest PE and on average; this says, per
+// PE, how much of it was spent computing (local and remote traversal, applying
+// fetched data), serving other PEs' requests, or neither -- waiting -- and how
+// much work and how many fetches it did. One [PEDIAG] line per PE at the end of
+// the run. Off by default; without the flag every hook below compiles away.
+//
+// One record per PE: under Reconverse a PE is a worker thread, so thread_local
+// (as traversalMass, Worker.h).
+#ifdef PE_DIAG
+struct PeDiag {
+  double busyLocal;    // TreePiece::doLocalGravity
+  double busyRemote;   // TreePiece::doRemoteGravity, recvNode, recvParticles
+  double busyServe;    // requestNode/requestParticles/requestMoments from others
+  CmiUInt8 pn, pp;     // particle-node and particle-particle interactions
+  CmiUInt8 nodeFetches, partFetches;     // requests this PE sent
+  CmiUInt8 nodeServed, partServed;       // requests this PE answered
+  CmiUInt8 particles, buckets;           // summed over steps
+};
+extern thread_local PeDiag peDiag;
+
+// How many of a process's fetches were for a key another PE of the same
+// process had already fetched that step: the duplication a cache shared by the
+// process's PEs would remove. Process-wide, so behind a mutex; diagnostic only.
+void peDiagNoteFetch(bool node, CmiUInt8 key);
+void peDiagEndStep(int step);
+
+struct PeDiagScope {
+  double &acc;
+  double t0;
+  PeDiagScope(double &a) : acc(a), t0(CkWallTimer()) {}
+  ~PeDiagScope(){ acc += CkWallTimer() - t0; }
+};
+#define PE_DIAG_TIME(field) PeDiagScope peDiagScope_(peDiag.field)
+#define PE_DIAG_COUNT(field, n) (peDiag.field += (n))
+#else
+#define PE_DIAG_TIME(field)
+#define PE_DIAG_COUNT(field, n)
+#endif
+
 #endif // __TIMERS_H__

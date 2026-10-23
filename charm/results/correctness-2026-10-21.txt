@@ -1,0 +1,36 @@
+Correctness matrix, Delta, job 23108565 (4 nodes, cpu-interactive), 2026-10-21
+barnes e02ff61 (the code in PR #8), Charm++ bc6d7a283, LCI dfb924cf
+2M bodies, 10 steps, default parameters; every run dumps forces at step 9
+
+$ compare_energy.py --tol 1e-10 <1x8> <layouts...>
+run                                                          steps        dK        dP spikes     drift
+corr-e02ff61_n2000000_N1_c8_p1x8_r1.log                         10  0.00e+00  0.00e+00      0  2.76e-06
+corr-e02ff61_n2000000_N1_c120_p8x15_r1.log                      10  0.00e+00  0.00e+00      0  2.76e-06
+corr-e02ff61_n2000000_N2_c60_p4x15_r1.log                       10  0.00e+00  0.00e+00      0  2.76e-06
+corr-e02ff61_n2000000_N2_c240_p16x15_r1.log                     10  0.00e+00  0.00e+00      0  2.76e-06
+corr-e02ff61_n2000000_N4_c480_p32x15_r1.log                     10  0.00e+00  0.00e+00      0  2.76e-06
+
+$ compare_forces.py dump 1x8 vs N1_8x15, step 9
+2000000 particles; positions identical: 1997778
+|da|/|a|   median 1.87e-16  p99 6.32e-16  max 3.01e-14
+dphi/phi   median 1.48e-16  p99 6.06e-16  max 2.66e-15
+identical  23323 of 2000000
+sum m*phi/2: ref -1.2335864990e-06  test -1.2335864990e-06
+$ compare_forces.py dump 1x8 vs N2_2x15, step 9
+2000000 particles; positions identical: 1997890
+|da|/|a|   median 1.81e-16  p99 5.91e-16  max 1.13e-14
+dphi/phi   median 1.42e-16  p99 5.70e-16  max 2.33e-15
+identical  28244 of 2000000
+sum m*phi/2: ref -1.2335864990e-06  test -1.2335864990e-06
+$ compare_forces.py dump 1x8 vs N2_8x15, step 9
+2000000 particles; positions identical: 1997772
+|da|/|a|   median 1.96e-16  p99 6.92e-16  max 3.86e-14
+dphi/phi   median 1.57e-16  p99 6.61e-16  max 2.18e-15
+identical  20273 of 2000000
+sum m*phi/2: ref -1.2335864990e-06  test -1.2335864990e-06
+$ compare_forces.py dump 1x8 vs N4_8x15, step 9
+2000000 particles; positions identical: 1997492
+|da|/|a|   median 2.25e-16  p99 8.86e-16  max 3.84e-14
+dphi/phi   median 1.77e-16  p99 8.57e-16  max 2.56e-15
+identical  14239 of 2000000
+sum m*phi/2: ref -1.2335864990e-06  test -1.2335864990e-06

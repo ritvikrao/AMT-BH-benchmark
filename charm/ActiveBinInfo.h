@@ -18,7 +18,12 @@ struct ActiveBinInfo{
   // build does not -- there the active set emptying out is what ends the loop.
   bool keepUnrefined;
 
-  ActiveBinInfo(bool keep = false) : keepUnrefined(keep) {
+  // Sum each bin's particle costs into its descriptor. The decomposition
+  // balances them; the local tree build has no use for them.
+  bool sumCost;
+
+  ActiveBinInfo(bool keep = false, bool cost = false) :
+    keepUnrefined(keep), sumCost(cost) {
     oldvec = new CkVec<std::pair<Node<T> *, bool> >();
     newvec = new CkVec<std::pair<Node<T> *, bool> >();
   }
@@ -43,13 +48,16 @@ struct ActiveBinInfo{
     newvec->push_back(pr);
     int np = node->getNumParticles();
     Particle *particles = node->getParticles();
+    double cost = 0.0;
     if(np > 0){
       kfirst = particles[0].key;
       klast = particles[np-1].key;
+      if(sumCost)
+        for(int i = 0; i < np; i++) cost += particles[i].cost;
     }else{
       kfirst = klast = Node<T>::getParticleLevelKey(node);
     }
-    counts.push_back(NodeDescriptor(np,node->getKey(),kfirst,klast));
+    counts.push_back(NodeDescriptor(np,node->getKey(),kfirst,klast,cost));
   }
 
   // Refine the bins named, and -- when keepUnrefined is set -- carry every

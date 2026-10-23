@@ -2,19 +2,21 @@
 #define __REQUEST_H__
 
 #include "Node.h"
+#include "WalkGroup.h"
 
 
-template<typename T> class CutoffWorker;
+class TraversalWorker;
 class State;
 template<typename T> class Traversal;
 
 struct Requestor {
-  CutoffWorker<ForceData> *worker;
+  TraversalWorker *worker;
   State *state;
   Traversal<ForceData> *traversal;
-  void *context;
+  // The walk to resume: its group and the buckets that reached the leaf.
+  WalkContext context;
 
-  Requestor(CutoffWorker<ForceData> *w, State *s, Traversal<ForceData> * t, void *ctx) :
+  Requestor(TraversalWorker *w, State *s, Traversal<ForceData> * t, const WalkContext &ctx) :
     worker(w),
     state(s),
     traversal(t),
@@ -23,7 +25,7 @@ struct Requestor {
   }
 
   Requestor() : 
-    worker(NULL), state(NULL), traversal(NULL), context(NULL) 
+    worker(NULL), state(NULL), traversal(NULL)
   {
   }
 };

@@ -15,7 +15,13 @@ CHARMC   = $(CHARM_PATH)/bin/charmc
 # Other useful toggles: -DVERBOSE_TRAVERSAL -DCHECK_NUM_INTERACTIONS
 #                       -DPRINT_TREE -DDEBUG_TRAVERSALS -DVERBOSE_NODE_REFINE
 APP_FLAGS = -DSTATISTICS
-OPTS      = -O3 -g $(APP_FLAGS)
+# The force kernel (gravity.h) is written to vectorise; -march=native lets it
+# use the build host's vector units (AVX2 and FMA on Delta's EPYC 7763). Build
+# on the kind of node you run on, or set ARCH, e.g. ARCH=-march=znver3.
+ARCH     ?= -march=native
+# The tree's branching factor: 2 (binary) or 8 (octree). See defines.h.
+BRANCH   ?= 2
+OPTS      = -O3 -g -fopenmp-simd -fno-math-errno -fno-trapping-math $(ARCH) -DBRANCH_FACTOR=$(BRANCH) $(APP_FLAGS)
 
 # Charm++ tracing, off by default. The trace libraries instrument every entry
 # method, so a traced binary is not the one the benchmark should be timed on --
@@ -62,6 +68,13 @@ $(TARGET): $(OBJECTS) .tracemode
 .tracemode: FORCE
 	@[ -f $@ ] && [ "`cat $@`" = "$(TRACE)" ] || { echo "$(TRACE)" > $@; }
 
+# Likewise APP_FLAGS and ARCH: the check builds (-DCHECK_TRAVERSAL_MASS,
+# -DEP_DIAG, ...) change every object, and without this a `make APP_FLAGS=...`
+# after a plain `make` finds everything up to date and quietly hands back the
+# plain binary.
+.appflags: FORCE
+	@[ -f $@ ] && [ "`cat $@`" = "$(APP_FLAGS) $(ARCH) $(BRANCH)" ] || { echo "$(APP_FLAGS) $(ARCH) $(BRANCH)" > $@; }
+
 FORCE:
 
 # Standalone input generators. These are plain C++; they do not link Charm++,
@@ -86,7 +99,7 @@ plummer: plummer.o gen_util.o
 
 clean:
 	rm -f core* $(OBJECTS) *~ $(TARGET) *.decl.h *.def.h charmrun conv-host \
-	      gen plummer plummer.o gen_util.o .tracemode
+	      gen plummer plummer.o gen_util.o .tracemode .appflags
 
 # Header dependencies. Every translation unit includes barnes.decl.h, which
 # charmc generates from barnes.ci via the pattern rule above and which a clean
@@ -96,7 +109,8 @@ clean:
 # object files in place. Eight files rebuild in seconds; a stale build costs a
 # lot more than that.
 HEADERS = $(wildcard *.h)
-$(OBJECTS): barnes.decl.h $(HEADERS)
+$(OBJECTS): barnes.decl.h $(HEADERS) .appflags
+barnes.decl.h barnes.def.h: .appflags
 plummer.o gen_util.o: $(HEADERS)
 gen: $(HEADERS)
 

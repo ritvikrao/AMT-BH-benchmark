@@ -6,6 +6,9 @@
 
 extern CProxy_TreePiece treePieceProxy;
 
+thread_local SourceLists sources;
+thread_local Packet packet;
+
 int ParticleFlushWorker::work(Node<NodeDescriptor> *node){
   if(node->getNumChildren() > 0) return 1;
 
@@ -43,9 +46,40 @@ int MomentsWorker::work(Node<ForceData> *node){
   return 1;
 }
 
+// Ask an owner that holds particles for this Remote leaf's moments. If no owner
+// does, the leaf is empty everywhere, and the DataManager settles it once the
+// walk is done; see DataManager::settleEmptyRemoteLeaves.
+void MomentsWorker::requestMomentsOf(Node<ForceData> *leaf){
+  int requestOwner = servingOwner(leaf->getOwnerStart(),leaf->getOwnerEnd(),tpCounts,leaf->getKey());
+  if(requestOwner < 0){
+    emptyRemoteLeaves.push_back(leaf);
+    return;
+  }
+  TB_DEBUG("(%d) requestMoments %lu from tree piece %d\n", CkMyPe(), leaf->getKey(), requestOwner);
+
+  CkEntryOptions opts;
+  opts.setQueueing(CK_QUEUEING_IFIFO);
+  opts.setPriority(REQUEST_MOMENTS_PRIORITY);
+  treePieceProxy[requestOwner].requestMoments(leaf->getKey(),CkMyPe(),&opts);
+}
+
 void MomentsWorker::setLeafType(Node<ForceData> *leaf){
   int ownerStart = leaf->getOwnerStart();
   int ownerEnd = leaf->getOwnerEnd();
+
+  // A leaf with several owners is a node buildTree left unrefined because this
+  // PE holds none of its particles. None of it is ours, whichever of our
+  // TreePieces its owner range happens to start at.
+  if(ownerEnd > ownerStart){
+    if(leaf->getNumParticles() > 0){
+      CkPrintf("(%d) leaf %lx holding %d local particles has owners [%d,%d]\n",
+               CkMyPe(), leaf->getKey(), leaf->getNumParticles(), ownerStart, ownerEnd);
+      CkAbort("local particles in an unrefined multi-owner leaf\n");
+    }
+    leaf->setType(Remote);
+    requestMomentsOf(leaf);
+    return;
+  }
 
   beg:
   // is the current PE the one that owns it?
@@ -59,15 +93,13 @@ void MomentsWorker::setLeafType(Node<ForceData> *leaf){
   else if(ownerStart < peTreePieces[curTP].index){
     // type could have been set to EmptyBucket during construction
     if(leaf->getType() == Invalid){
-      leaf->setType(Remote); 
-      int numOwners = leaf->getOwnerEnd()-leaf->getOwnerStart()+1;
-      int requestOwner = leaf->getOwnerStart()+(rand()%numOwners);
-      TB_DEBUG("(%d) requestMoments %lu from tree piece %d\n", CkMyPe(), leaf->getKey(), requestOwner);
-
-      CkEntryOptions opts;
-      opts.setQueueing(CK_QUEUEING_IFIFO);
-      opts.setPriority(REQUEST_MOMENTS_PRIORITY);
-      treePieceProxy[requestOwner].requestMoments(leaf->getKey(),CkMyPe(),&opts);
+      if(leaf->getNumParticles() > 0){
+        CkPrintf("(%d) leaf %lx holding %d local particles would be Remote (owner %d, expected TreePiece %d)\n",
+                 CkMyPe(), leaf->getKey(), leaf->getNumParticles(), ownerStart, peTreePieces[curTP].index);
+        CkAbort("local particles in a Remote leaf\n");
+      }
+      leaf->setType(Remote);
+      requestMomentsOf(leaf);
     }
     return;
   }
@@ -107,73 +139,15 @@ void MomentsWorker::setTypeFromChildren(Node<ForceData> *node){
 }
 
 #ifdef CHECK_TRAVERSAL_MASS
-std::map<Key,Real> traversalMass[MAX_TRAVERSAL_MASS_PES];
+thread_local std::map<Key,Real> traversalMass;
 #endif
-
-int TraversalWorker::work(Node<ForceData> *node){
-  NodeType type = node->getType();
-  state->nodeEncountered(currentBucket->getKey(),node);
-  bool keep = getKeep(type);
-
-  if(!keep){
-    state->nodeDiscarded(currentBucket->getKey(),node);
-    return 0;
-  }
-
-  // basic opening criterion
-  bool open = openCriterionBucket(node,currentBucket);
-  state->incrOpenCriterion();
-  if(open){
-    state->nodeOpened(currentBucket->getKey(),node);
-    return 1;
-  }
-
-  // A Boundary node is reached by both traversals, so without this its
-  // multipole -- which covers its remote subtree as well as its local one --
-  // would be applied to the bucket twice. It cannot simply be dropped from one
-  // keep table: both traversals still have to descend through Boundary nodes
-  // to reach their own leaves. Give the approximation to the local traversal
-  // and let the remote one walk past it.
-  if(type == Boundary && !computesUnopenedBoundary()){
-    state->nodeDiscarded(currentBucket->getKey(),node);
-    return 0;
-  }
-
-#ifdef CHECK_TRAVERSAL_MASS
-  traversalMass[CkMyPe()][currentBucket->getKey()] += node->data.moments.totalMass;
-#endif
-  int computed = nodeBucketForce(node,currentBucket);
-  state->nodeComputed(currentBucket,node->getKey());
-  state->incrPartNodeInteractions(currentBucket->getKey(),computed);
-  return 0;
-}
-
-void TraversalWorker::work(ExternalParticle *particle){
-#ifdef CHECK_TRAVERSAL_MASS
-  traversalMass[CkMyPe()][currentBucket->getKey()] += particle->mass;
-#endif
-  int computed = partBucketForce(particle,currentBucket);
-  state->incrPartPartInteractions(currentBucket->getKey(),computed);
-}
-
-void TraversalWorker::bucketDone(Key k){
-  state->bucketComputed(currentBucket,k);
-}
-
-bool LocalTraversalWorker::getKeep(NodeType type){
-  return keep[type];
-}
-
-bool RemoteTraversalWorker::getKeep(NodeType type){
-  return keep[type];
-}
 
 void RemoteTraversalWorker::done(){
   ownerTreePiece->remoteGravityDone();
 }
 
-const bool LocalTraversalWorker::keep[] = {false,true,true,false,true,false,false,false};
-const bool RemoteTraversalWorker::keep[] = {false,false,false,false,true,true,true,false};
+const bool LocalTraversalWorker::keepTable[] = {false,true,true,false,true,false,false,false};
+const bool RemoteTraversalWorker::keepTable[] = {false,false,false,false,true,true,true,false};
 
 int TreeSizeWorker::work(Node<ForceData> *node){
   int depth = node->getDepth();
@@ -198,14 +172,5 @@ int TreeChecker::work(Node<ForceData> *node){
     os << "CHECK: " << node->getKey() << " 0 children" << endl;
   }
   return 1;
-}
-
-int InteractionChecker::work(Node<ForceData> *node){
-  if(node->getNumChildren() == 0) return 1;
-
-  for(int i = 0; i < BRANCH_FACTOR; i++){
-  }
-
-  return 0;
 }
 

@@ -1,0 +1,39 @@
+Correctness matrix, Delta, job 22904192 (cn[030,038,069,098]), 2026-10-14
+barnes 89d55a5 (+ correctness campaign dumps), Charm++ bc6d7a283, LCI dfb924cf
+2M bodies, 10 steps, -ppc=2000, theta 0.5; every run dumps forces at step 9
+
+$ compare_energy.py --tol 1e-10 <1x8> <layouts...>
+run                                                          steps        dK        dP spikes     drift
+corr_n2000000_N1_c8_p1x8_r1.log                                 10  0.00e+00  0.00e+00      0  3.15e-06
+corr_n2000000_N1_c120_p8x15_r1.log                              10  0.00e+00  0.00e+00      0  3.15e-06
+corr_n2000000_N2_c60_p4x15_r1.log                               10  0.00e+00  0.00e+00      0  3.15e-06
+corr_n2000000_N2_c240_p16x15_r1.log                             10  0.00e+00  0.00e+00      0  3.15e-06
+corr_n2000000_N4_c480_p32x15_r1.log                             10  0.00e+00  0.00e+00      0  3.15e-06
+
+$ compare_forces.py dump 1x8 (1 node) vs N1_8x15, step 9
+2000000 particles; positions identical: 1987668
+|da|/|a|   median 7.26e-16  p99 3.06e-15  max 6.59e-14
+dphi/phi   median 4.04e-16  p99 2.73e-15  max 8.09e-15
+identical  35790 of 2000000
+sum m*phi/2: ref -1.2334064565e-06  test -1.2334064565e-06
+
+$ compare_forces.py dump 1x8 (1 node) vs N2_2x15, step 9
+2000000 particles; positions identical: 1988104
+|da|/|a|   median 6.87e-16  p99 2.99e-15  max 6.81e-14
+dphi/phi   median 3.84e-16  p99 2.64e-15  max 8.09e-15
+identical  47237 of 2000000
+sum m*phi/2: ref -1.2334064565e-06  test -1.2334064565e-06
+
+$ compare_forces.py dump 1x8 (1 node) vs N2_8x15, step 9
+2000000 particles; positions identical: 1987657
+|da|/|a|   median 7.45e-16  p99 3.09e-15  max 6.14e-14
+dphi/phi   median 4.22e-16  p99 2.79e-15  max 7.13e-15
+identical  29290 of 2000000
+sum m*phi/2: ref -1.2334064565e-06  test -1.2334064565e-06
+
+$ compare_forces.py dump 1x8 (1 node) vs N4_8x15, step 9
+2000000 particles; positions identical: 1987464
+|da|/|a|   median 7.59e-16  p99 3.11e-15  max 7.09e-14
+dphi/phi   median 4.34e-16  p99 2.86e-15  max 7.53e-15
+identical  24730 of 2000000
+sum m*phi/2: ref -1.2334064565e-06  test -1.2334064565e-06

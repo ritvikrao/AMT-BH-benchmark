@@ -39,12 +39,30 @@ struct Parameters {
   int ppb;
 
   int yieldPeriod;
+  // Most particles in a walk group (WalkGroup.h); 1 walks each bucket alone.
+  int walkGroupParticles;
+  // -walk=packet applies accepted nodes to the group's particles in SIMD
+  // lanes during the walk (Packet.h); -walk=list gathers per-bucket
+  // interaction lists and applies them afterwards (gravity.h).
+  bool packetWalk;
   int cacheLineSize;
+
+  // -balance=count (default) cuts the decomposition by particle count;
+  // -balance=cost by the particles' measured cost, so that PEs get equal work.
+  // Cost balancing evens out the interactions per PE (1.28 -> 1.10 max/mean,
+  // 8M bodies on 4 Stampede3 nodes) but is slower there, because the PEs
+  // left holding many cheap particles then serve more of the tree to everyone
+  // else. Opt-in until serving is cheaper; MULTINODE.md, "Traversal".
+  bool balanceByCost;
 
   int iterations;
 
   // Bit per Phase; see Timers.h. 0 means no timing at all.
   int timerMask;
+  // -dumpstep=k writes every particle's force and potential at step k
+  // (dumpForces); -1, the default, writes nothing.
+  int dumpStep;
+  std::string dumpPrefix;
 
   // ParaView snapshots; disabled unless a prefix was given. See VtkOutput.h.
   OutputConfig output;
@@ -66,10 +84,15 @@ struct Parameters {
     p | ppc;
     p | ppb;
     p | yieldPeriod;
+    p | walkGroupParticles;
+    p | packetWalk;
     p | theta;
     p | cacheLineSize;
+    p | balanceByCost;
     p | iterations;
     p | timerMask;
+    p | dumpStep;
+    p | dumpPrefix;
     p | output;
   }
 

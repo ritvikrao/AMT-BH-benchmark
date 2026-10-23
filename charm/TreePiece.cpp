@@ -10,10 +10,6 @@ extern CProxy_DataManager dataManagerProxy;
 extern Parameters globalParams;
 
 TreePiece::TreePiece() : 
-  myNumParticles(0),
-  numDecompMsgsRecvd(0),
-  smallestKey(~Key(0)),
-  largestKey(Key(0)),
   localTraversalState(),
   remoteTraversalState(),
   localStateID(0), 
@@ -27,57 +23,76 @@ TreePiece::TreePiece() :
   myDM = dataManagerProxy.ckLocalBranch();
 }
 
-void TreePiece::receiveParticles(ParticleMsg *msg){
-  int msgNumParticles = msg->numParticles;
-  decompMsgsRecvd.push_back(msg);
-  myNumParticles += msgNumParticles;
-  numDecompMsgsRecvd++;
-  if(smallestKey > msg->part[0].key) smallestKey = msg->part[0].key;
-  if(largestKey < msg->part[msgNumParticles-1].key) largestKey = msg->part[msgNumParticles-1].key;
-  
-  if(numDecompMsgsRecvd == CkNumPes()){
-    submitParticles();
-    numDecompMsgsRecvd = 0;
-  }
-}
-
-void TreePiece::receiveParticles(){
-  numDecompMsgsRecvd++;
-  if(numDecompMsgsRecvd == CkNumPes()){
-    submitParticles();
-    numDecompMsgsRecvd = 0;
-  }
-}
-
-void TreePiece::submitParticles(){
-  myDM->submitParticles(&decompMsgsRecvd,myNumParticles,this,smallestKey,largestKey);
-}
-
 void TreePiece::prepare(Node<ForceData> *_root, Node<ForceData> **buckets, int bucketStart, int bucketEnd){
   root = _root;
   myBuckets = buckets+bucketStart;
   myNumBuckets = bucketEnd-bucketStart;
 }
 
+// Cut the buckets that hold particles into runs of at most
+// WALK_GROUP_MAX_BUCKETS buckets and globalParams.walkGroupParticles
+// particles (a bucket larger than that walks alone). Consecutive buckets are
+// neighbours along the space-filling curve, so a group is compact and its
+// buckets accept and open mostly the same nodes. -walkgroup=1 gives one
+// bucket per group, the walk per bucket. Empty buckets are left out: they
+// have no forces to compute, and a refinement leaves many of them, most of
+// all in an octree.
+void TreePiece::formWalkGroups(){
+  walkBuckets.clear();
+  for(int i = 0; i < myNumBuckets; i++)
+    if(myBuckets[i]->getNumParticles() > 0) walkBuckets.push_back(myBuckets[i]);
+  const int numWalkBuckets = walkBuckets.size();
+
+  walkGroups.clear();
+  int i = 0;
+  while(i < numWalkBuckets){
+    WalkGroup g;
+    g.buckets = walkBuckets.data() + i;
+    g.numBuckets = 0;
+    int particles = 0;
+    while(i < numWalkBuckets && g.numBuckets < WALK_GROUP_MAX_BUCKETS){
+      int np = walkBuckets[i]->getNumParticles();
+      if(g.numBuckets > 0 && particles + np > globalParams.walkGroupParticles) break;
+      particles += np;
+      const Vector3D<Real> &cm = walkBuckets[i]->data.moments.cm;
+      g.cx[g.numBuckets] = cm.x;
+      g.cy[g.numBuckets] = cm.y;
+      g.cz[g.numBuckets] = cm.z;
+      g.np[g.numBuckets] = np;
+      g.numBuckets++;
+      i++;
+    }
+    // visit() reads the centres four at a time; give the unused slots a
+    // finite value (their bits are never in a mask).
+    for(int b = g.numBuckets; b < WALK_GROUP_MAX_BUCKETS; b++){
+      g.cx[b] = g.cy[b] = g.cz[b] = 0.0;
+    }
+    g.packet = globalParams.packetWalk && particles <= PACKET_MAX_LANES;
+    walkGroups.push_back(g);
+  }
+}
+
 void TreePiece::startTraversal(){
   numTraversalsDone = 0;
   trav.setDataManager(myDM);
 
-  if(myNumBuckets == 0){
+  formWalkGroups();
+  const int numGroups = walkGroups.size();
+  if(numGroups == 0){
     localGravityDone();
     remoteGravityDone();
     return;
   }
 
-  remoteTraversalState.reset(this,myNumBuckets,myBuckets);
-  remoteTraversalWorker.reset(this,&remoteTraversalState,*myBuckets);
+  remoteTraversalState.reset(this,numGroups,NULL);
+  remoteTraversalWorker.reset(this,&remoteTraversalState);
   RescheduleMsg *msg = new (NUM_PRIORITY_BITS) RescheduleMsg;
   *(int *)CkPriorityPtr(msg) = REMOTE_GRAVITY_PRIORITY;
   CkSetQueueing(msg, CK_QUEUEING_IFIFO);
   thisProxy[thisIndex].doRemoteGravity(msg);
 
-  localTraversalState.reset(this,myNumBuckets,myBuckets);
-  localTraversalWorker.reset(this,&localTraversalState,*myBuckets);
+  localTraversalState.reset(this,numGroups,NULL);
+  localTraversalWorker.reset(this,&localTraversalState);
 
   msg = new (NUM_PRIORITY_BITS) RescheduleMsg;
   *(int *)CkPriorityPtr(msg) = LOCAL_GRAVITY_PRIORITY;
@@ -85,42 +100,50 @@ void TreePiece::startTraversal(){
   thisProxy[thisIndex].doLocalGravity(msg);
 }
 
+// Walks groups until yieldPeriod buckets' worth are done, then yields so that
+// fetch replies and requests from other PEs are served in between.
 void TreePiece::doLocalGravity(RescheduleMsg *msg){
-  int i;
-  for(i = 0; i < globalParams.yieldPeriod && 
-                 localTraversalState.current < myNumBuckets; 
-                 i++){
-    trav.topDownTraversal(root,&localTraversalWorker,&localTraversalState);
+  PE_DIAG_TIME(busyLocal);
+  const int numGroups = walkGroups.size();
+  int i = 0, buckets = 0;
+  while(buckets < globalParams.yieldPeriod && localTraversalState.current < numGroups){
+    const WalkGroup &g = walkGroups[localTraversalState.current];
+    localTraversalWorker.setContext(WalkContext(&g,allBuckets(g)));
+    trav.gravityWalk(root,&localTraversalWorker,&localTraversalState,allBuckets(g));
+    localTraversalWorker.endWalk();
     localTraversalState.current++;
-    localTraversalState.currentBucketPtr++;
-    localTraversalWorker.setContext(*localTraversalState.currentBucketPtr);
+    buckets += g.numBuckets;
+    i++;
   }
 
   if(localTraversalState.decrPending(i)){
     localGravityDone();
     delete msg;
   }
-  else if(localTraversalState.current < myNumBuckets) {
+  else if(localTraversalState.current < numGroups) {
     thisProxy[thisIndex].doLocalGravity(msg);
   }
 }
 
 void TreePiece::doRemoteGravity(RescheduleMsg *msg){
-  int i;
-  for(i = 0; i < globalParams.yieldPeriod &&
-                 remoteTraversalState.current < myNumBuckets;
-                 i++){
-    trav.topDownTraversal(root,&remoteTraversalWorker,&remoteTraversalState);
+  PE_DIAG_TIME(busyRemote);
+  const int numGroups = walkGroups.size();
+  int i = 0, buckets = 0;
+  while(buckets < globalParams.yieldPeriod && remoteTraversalState.current < numGroups){
+    const WalkGroup &g = walkGroups[remoteTraversalState.current];
+    remoteTraversalWorker.setContext(WalkContext(&g,allBuckets(g)));
+    trav.gravityWalk(root,&remoteTraversalWorker,&remoteTraversalState,allBuckets(g));
+    remoteTraversalWorker.endWalk();
     remoteTraversalState.current++;
-    remoteTraversalState.currentBucketPtr++;
-    remoteTraversalWorker.setContext(*remoteTraversalState.currentBucketPtr);
+    buckets += g.numBuckets;
+    i++;
   }
 
   if(remoteTraversalState.decrPending(i)){
     remoteGravityDone();
     delete msg;
   }
-  else if (remoteTraversalState.current < myNumBuckets) {
+  else if (remoteTraversalState.current < numGroups) {
     thisProxy[thisIndex].doRemoteGravity(msg);
   }
 }
@@ -156,9 +179,6 @@ void TreePiece::finishIteration(){
   localTraversalState.finishedIteration();
   remoteTraversalState.finishedIteration();
 
-  myNumParticles = 0;
-  numDecompMsgsRecvd = 0;
-  decompMsgsRecvd.length() = 0;
 
   iteration++;
 
@@ -169,10 +189,9 @@ void TreePiece::checkTraversals(){
 }
 
 void TreePiece::quiescence(){
-  CkPrintf("QUIESCENCE tree piece %d proc %d submitted %d numBuckets %d trav_done %d outstanding local %d remote %d\n", 
+  CkPrintf("QUIESCENCE tree piece %d proc %d numBuckets %d trav_done %d outstanding local %d remote %d\n", 
                 thisIndex,
                 CkMyPe(),
-                myNumParticles,
                 myNumBuckets,
                 numTraversalsDone,
                 localTraversalState.pending,

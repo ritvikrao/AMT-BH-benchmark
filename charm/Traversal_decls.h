@@ -16,7 +16,7 @@ class Traversal {
   // to request particles/nodes from
   DataManager *dm;
 
-  void processLeaf(Node<T> *node, CutoffWorker<T> *worker, State *state);
+  void gravityLeaf(Node<T> *leaf, TraversalWorker *worker, State *state, uint64_t mask);
 
   public:
 
@@ -30,7 +30,9 @@ class Traversal {
   // all children are stored together but processed
   // separately
   void preorderTraversal(Node<T> *root, CutoffWorker<T> *worker);
-  void topDownTraversal(Node<T> *root, CutoffWorker<T> *worker, State *state);
+  // The gravity walk, for the group of buckets in the worker's context, of
+  // which those in mask are walking (WalkGroup.h).
+  void gravityWalk(Node<T> *root, TraversalWorker *worker, State *state, uint64_t mask);
   void topDownTraversal_local(Node<T> *root, CutoffWorker<T> *worker);
   void postorderTraversal(Node<T> *root, CutoffWorker<T> *worker);
 };

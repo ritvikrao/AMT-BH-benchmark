@@ -54,44 +54,57 @@ void Traversal<T>::topDownTraversal_local(Node<T> *root, CutoffWorker<T> *worker
 }
 
 template<typename T>
-void Traversal<T>::topDownTraversal(Node<T> *root, CutoffWorker<T> *worker, State *state){
-  stack<Node<T>*> ptrStk;
-  int ret = worker->work(root);
-  if(ret == 0) return;
+void Traversal<T>::gravityWalk(Node<T> *root, TraversalWorker *worker, State *state, uint64_t mask){
+  uint64_t open = worker->visit(root,mask);
+  if(open == 0) return;
 
-  ptrStk.push(root); 
+  // An explicit stack in a fixed array, of nodes and the buckets that opened
+  // them: a std::stack (a deque) costs a call and a branch per push and pop,
+  // and this loop runs for every node the walk meets. Keys have 64 bits, so
+  // the tree is at most 64 levels deep, and the walk holds at most
+  // BRANCH_FACTOR - 1 waiting siblings per level.
+  const int STACK_MAX = 64*BRANCH_FACTOR + 1;
+  Node<T> *nodeStk[STACK_MAX];
+  uint64_t maskStk[STACK_MAX];
+  int top = 0;
+  nodeStk[top] = root;
+  maskStk[top++] = open;
 
-  Node<T> *tmp[BRANCH_FACTOR];
-  int numChildrenToExpand;
+  Node<T> *tmpNode[BRANCH_FACTOR];
+  uint64_t tmpMask[BRANCH_FACTOR];
 
-  while(!ptrStk.empty()){
-    Node<T> *t_parent = ptrStk.top();
+  while(top > 0){
+    --top;
+    Node<T> *t_parent = nodeStk[top];
+    const uint64_t t_mask = maskStk[top];
     Node<T> *t_children = t_parent->getChildren();
     int t_numChildren = t_parent->getNumChildren();
-    ptrStk.pop();
 
-    numChildrenToExpand = 0;
     if(t_numChildren == 0){
-      processLeaf(t_parent,worker,state);
+      gravityLeaf(t_parent,worker,state,t_mask);
       continue;
     }
 
+    int numChildrenToExpand = 0;
     for(int i = 0; i < t_numChildren; i++){
       Node<T> *t_node = t_children+i;
-      ret = worker->work(t_node);
-      if(ret > 0){
-        tmp[numChildrenToExpand] = t_node;
+      uint64_t m = worker->visit(t_node,t_mask);
+      if(m != 0){
+        tmpNode[numChildrenToExpand] = t_node;
+        tmpMask[numChildrenToExpand] = m;
         numChildrenToExpand++;
       }
     }
+    CkAssert(top + numChildrenToExpand <= STACK_MAX);
     for(int i = numChildrenToExpand-1; i >= 0; i--){
-      ptrStk.push(tmp[i]);
+      nodeStk[top] = tmpNode[i];
+      maskStk[top++] = tmpMask[i];
     }
   }
 }
 
 template<typename T>
-void Traversal<T>::processLeaf(Node<T> *leaf, CutoffWorker<T> *worker, State *state){
+void Traversal<T>::gravityLeaf(Node<T> *leaf, TraversalWorker *worker, State *state, uint64_t mask){
   NodeType type = leaf->getType();
 
   CkAssert(type != Internal);
@@ -99,34 +112,27 @@ void Traversal<T>::processLeaf(Node<T> *leaf, CutoffWorker<T> *worker, State *st
 
   if(type == EmptyBucket || type == RemoteEmptyBucket) return;
 
+  WalkContext here(worker->getContext().group,mask);
   if(type == Bucket){
     Particle *particles = leaf->getParticles();
     int np = leaf->getNumParticles();
     CkAssert(particles);
     CkAssert(np > 0);
-   
-    for(int i = 0; i < np; i++){
-      worker->work(particles+i);
-    }
-    worker->bucketDone(leaf->getKey());
+    worker->applyParticles(particles,np,mask);
   }
   else if(type == RemoteBucket){
     ExternalParticle *particles = (ExternalParticle *)leaf->getParticles();
     int np = leaf->getNumParticles();
     if(particles == NULL){
       state->incrPending();
-      dm->requestParticles(leaf,worker,state,this);
+      dm->requestParticles(leaf,worker,state,this,here);
       return;
     }
-
-    for(int i = 0; i < np; i++){
-      worker->work(particles+i);
-    }
-    worker->bucketDone(leaf->getKey());
+    worker->applyParticles(particles,np,mask);
   }
   else if(type == Remote){
     state->incrPending();
-    dm->requestNode(leaf,worker,state,this);
+    dm->requestNode(leaf,worker,state,this,here);
   }
 }
 

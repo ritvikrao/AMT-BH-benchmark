@@ -110,8 +110,30 @@ class DataManager : public CBase_DataManager {
   Node<ForceData> *root;
 
   Key *keyRanges;
+  // Exact particle count per TreePiece from the final histogram round: owned
+  // by PE 0, the RangeMsg's array elsewhere.
+  int *tpCounts;
   bool haveRanges;
   RangeMsg *rangeMsg;
+
+  // The particle exchange. Each DM sends one message per destination PE that
+  // gets any of its particles (not one per TreePiece), and a DM has all of its
+  // particles once it holds exactly the number the counts promise its local
+  // TreePieces -- no empty messages, no per-TreePiece barrier.
+  CkVec<ParticleMsg *> arrivedParticleMsgs;
+  long numParticlesArrived;
+  long numParticlesExpected;
+  // Home PE of every TreePiece (no migration, so also its location), so that a
+  // sender can address the DM rather than the TreePiece.
+  std::vector<int> tpHome;
+  // Flush state: runs of particles bound for flushDest, sent as one message.
+  int flushDest;
+  std::vector<std::pair<Particle *, int> > flushRuns;
+  void emitFlushRun();
+  int homeOf(int tp);
+  void expectParticles();
+  void tryProcessParticles();
+  void buildLocalDescriptors();
   CkVec<Node<ForceData>*> myBuckets;
 
   // I am done constructing the tree 
@@ -121,6 +143,10 @@ class DataManager : public CBase_DataManager {
   map<Key,Node<ForceData>*> nodeTable;
 
   map<Key,CkVec<int> > pendingMoments;
+
+  // Remote leaves with no particles anywhere, found by the moments walk and
+  // settled locally instead of being asked for; see settleEmptyRemoteLeaves.
+  CkVec<Node<ForceData>*> emptyRemoteLeaves;
 
   // I have processed the moment 
   // contributions from all other PEs, so that
@@ -140,7 +166,6 @@ class DataManager : public CBase_DataManager {
   CacheStats nodeReqs;
   CacheStats partReqs;
 
-  Real savedEnergy;
 
 #ifdef STATISTICS
   CmiUInt8 numInteractions[3];
@@ -153,6 +178,7 @@ class DataManager : public CBase_DataManager {
   void kickDriftKick(OrientedBox<Real> &box, Real &kineticEnergy, Real &potentialEnergy);
 
   void writeSnapshot();
+  void dumpForces();
 
   void loadParticlesBinary(const CkCallback &cb);
   void loadParticlesCsv(const CkCallback &cb);
@@ -171,6 +197,7 @@ class DataManager : public CBase_DataManager {
 
   void processSubmittedParticles();
   void makeMoments();
+  void settleEmptyRemoteLeaves();
   void flushMomentRequests();
   void respondToMomentsRequest(Node<ForceData> *,CkVec<int>&);
   Node<ForceData> *lookupNode(Key k);
@@ -187,6 +214,9 @@ class DataManager : public CBase_DataManager {
   void finishIteration();
 
   void findMinVByA(DtReductionStruct &);
+#ifdef PE_DIAG
+  void reportPeDiag();
+#endif
 
   void markNaNBuckets();
 
@@ -205,7 +235,7 @@ class DataManager : public CBase_DataManager {
   void receiveMoments(MomentsMsg *msg);
   
   // called by tree pieces
-  void submitParticles(CkVec<ParticleMsg *> *vec, int numParticles, TreePiece *tp, Key smallestKey, Key largestKey); 
+  void receiveParticles(ParticleMsg *msg);
   void requestMoments(Key k, int replyTo);
   void advance(CkReductionMsg *);
 #ifdef STATISTICS
@@ -215,8 +245,8 @@ class DataManager : public CBase_DataManager {
 #endif
 
   // called by tree piece that is making a request
-  void requestNode(Node<ForceData> *leaf, CutoffWorker<ForceData> *worker, State *state, Traversal<ForceData> *callbackTraversal);
-  void requestParticles(Node<ForceData> *leaf, CutoffWorker<ForceData> *worker, State *state, Traversal<ForceData> *callbackTraversal);
+  void requestNode(Node<ForceData> *leaf, TraversalWorker *worker, State *state, Traversal<ForceData> *callbackTraversal, const WalkContext &context);
+  void requestParticles(Node<ForceData> *leaf, TraversalWorker *worker, State *state, Traversal<ForceData> *callbackTraversal, const WalkContext &context);
 
   // called by tree piece that is forwarding a remote request
   void requestNode(RequestMsg *msg);

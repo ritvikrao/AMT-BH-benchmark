@@ -7,22 +7,21 @@
 
 #include "TreePiece.h"
 
+// Resume each walk that waited for this leaf, for the buckets that reached
+// it, and flush what it adds (gravity.h: every walk ends with a flush).
 void Request::deliverParticles(int num){
   for(int i = 0; i < requestors.length(); i++){
     Requestor &req = requestors[i];
-    CutoffWorker<ForceData> *worker = req.worker;
+    TraversalWorker *worker = req.worker;
 
-    void *saveContext = worker->getContext();
     worker->setContext(req.context);
 
     ExternalParticle *externalParticles = (ExternalParticle *)data;
     for(int j = 0; j < num; j++){ 
       CkAssert(!isnan((externalParticles+j)->position.length()));
-      worker->work(externalParticles+j);
     }
-    worker->bucketDone(parent->getKey());
-
-    worker->setContext(saveContext);
+    worker->applyParticles(externalParticles,num,req.context.mask);
+    worker->endWalk();
     State *state = req.state;
     if(state->decrPending()){
       worker->done();
@@ -35,9 +34,8 @@ void Request::deliverParticles(int num){
 void Request::deliverNode(){
   for(int i = 0; i < requestors.length(); i++){
     Requestor &req = requestors[i];
-    CutoffWorker<ForceData> *worker = req.worker;
+    TraversalWorker *worker = req.worker;
 
-    void *saveContext = worker->getContext();
     worker->setContext(req.context);
 
     Traversal<ForceData> *traversal = req.traversal; 
@@ -45,10 +43,9 @@ void Request::deliverNode(){
     Node<ForceData> *firstChild = (Node<ForceData>*) data;
     // start the traversal for each of the received children
     for(int j = 0; j < BRANCH_FACTOR; j++){
-      traversal->topDownTraversal(firstChild+j,worker,state);
+      traversal->gravityWalk(firstChild+j,worker,state,req.context.mask);
     }
-
-    worker->setContext(saveContext);
+    worker->endWalk();
     if(state->decrPending()){
       worker->done();
     }

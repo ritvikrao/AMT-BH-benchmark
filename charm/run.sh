@@ -11,7 +11,9 @@
 #
 # Environment:
 #   PES         PEs (worker threads) per process.    (default 4)
-#   PROCS       Processes.                           (default 1)
+#   PROCS       Processes, in total.                 (default 1)
+#   NODES       Nodes the processes are spread over, PROCS/NODES on each.
+#               Only used when run.sh picks srun itself. (default 1)
 #   STEPS       Steps to run, -killat.               (default 10)
 #   NBODY       Bodies to generate when no input is given.  (default 10000)
 #   PPC         Target particles per TreePiece, -ppc.
@@ -36,8 +38,10 @@
 #   ./run.sh data.csv -ppc=2000               # the project's dataset
 #   PROCS=8 PES=15 LAUNCHER="srun -n 8 --cpu-bind=none --unbuffered" \
 #       ./run.sh data.csv -ppc=2000 -G=4.498626405128888e-15 -dtime=5000 -eps=0.1
+#   NODES=2 PROCS=16 PES=15 ./run.sh data.csv ...   # inside a 2-node allocation
 #
-# The last one is a full Delta CPU node. Runs at that scale need the fabric
+# The fourth one is a full Delta CPU node. For measurements, scripts/submit.sh
+# and the campaigns under scripts/campaigns/ set all of this per machine. Runs at that scale need the fabric
 # environment and the physical units set too -- see "Running at scale" in
 # README.md, which the defaults here deliberately do not try to guess at.
 
@@ -56,6 +60,8 @@ fi
 
 PES=${PES:-4}
 PROCS=${PROCS:-1}
+NODES=${NODES:-1}
+[ $((PROCS % NODES)) -eq 0 ] || die "PROCS=$PROCS is not a multiple of NODES=$NODES"
 STEPS=${STEPS:-10}
 NBODY=${NBODY:-10000}
 
@@ -93,7 +99,8 @@ elif [ -n "${SLURM_JOB_ID:-}" ] && command -v srun >/dev/null 2>&1; then
     # --cpu-bind=none so Slurm's binding does not fight Charm++'s own, and
     # --unbuffered because libfabric's fatal messages are otherwise lost to
     # buffering and a dying job looks like a hang.
-    LAUNCH=(srun -n "$PROCS" --cpu-bind=none --unbuffered --kill-on-bad-exit=1)
+    LAUNCH=(srun -N "$NODES" -n "$PROCS" --ntasks-per-node=$((PROCS / NODES))
+            --cpu-bind=none --unbuffered --kill-on-bad-exit=1)
 elif [ "$PROCS" -eq 1 ]; then
     LAUNCH=()
 elif [ -n "${CHARM_PATH:-}" ] && [ -x "$CHARM_PATH/_deps/lci-src/lcrun" ]; then

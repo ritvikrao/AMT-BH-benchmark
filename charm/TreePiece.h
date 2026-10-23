@@ -2,6 +2,7 @@
 #define __TREE_PIECE_H__
 
 #include "defines.h"
+#include <vector>
 #include "OrientedBox.h"
 #include "barnes.decl.h"
 #include "Particle.h"
@@ -16,14 +17,15 @@
 #include "Traversal_decls.h"
 
 class TreePiece : public CBase_TreePiece {
-  int numDecompMsgsRecvd;
-  CkVec<ParticleMsg *> decompMsgsRecvd;
-  int myNumParticles;
-
   int iteration;
 
   int myNumBuckets;
   Node<ForceData> **myBuckets;
+  // This step's buckets that hold particles, and the walk groups cut from
+  // them: consecutive runs (WalkGroup.h).
+  std::vector<Node<ForceData>*> walkBuckets;
+  std::vector<WalkGroup> walkGroups;
+  void formWalkGroups();
   Node<ForceData> *root;
 
   State localTraversalState;
@@ -34,11 +36,7 @@ class TreePiece : public CBase_TreePiece {
 
   Traversal<ForceData> trav;
 
-  Key smallestKey;
-  Key largestKey;
   DataManager *myDM;
-
-  void submitParticles();
 
   int localStateID;
   int remoteStateID;
@@ -55,9 +53,6 @@ class TreePiece : public CBase_TreePiece {
   TreePiece(CkMigrateMessage *) {}
 
   int getIndex() {return thisIndex;}
-
-  void receiveParticles(ParticleMsg *msg);
-  void receiveParticles();
 
   void prepare(Node<ForceData> *_root, Node<ForceData> **buckets, int bucketStart, int bucketEnd);
   void startTraversal();
