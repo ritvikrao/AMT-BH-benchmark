@@ -1,0 +1,10 @@
+module SfcLB {
+
+extern module CentralLB;
+initnode void lbinit(void);
+
+group [migratable] SfcLB : CentralLB {
+  entry void SfcLB(const CkLBOptions &);
+};
+
+};

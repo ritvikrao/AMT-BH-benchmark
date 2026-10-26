@@ -1,4 +1,6 @@
 mainmodule barnes {
+  // +balancer SfcLB (SfcLB.h)
+  extern module SfcLB;
   
   readonly CProxy_TreePiece treePieceProxy;
   readonly CProxy_DataManager dataManagerProxy;

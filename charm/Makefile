@@ -51,7 +51,7 @@ AR  = ar q
 CXX_DEPEND = $(CXX) -M -MM -MG -Wall $(APP_FLAGS)
 CFLAGS = $(OPTS) $(DEFINE_FLAGS) -g
 
-OBJECTS = Main.o DataManager.o TreePiece.o util.o Reduction.o Worker.o Request.o State.o
+OBJECTS = Main.o DataManager.o TreePiece.o util.o Reduction.o Worker.o Request.o State.o SfcLB.o
 SRC = Main.cpp DataManager.cpp TreePiece.cpp \
       util.cpp Reduction.cpp Worker.cpp Request.cpp \
       State.cpp particleGenerator.cpp gen_util.cpp plummer.cpp
@@ -109,8 +109,9 @@ clean:
 # object files in place. Eight files rebuild in seconds; a stale build costs a
 # lot more than that.
 HEADERS = $(wildcard *.h)
-$(OBJECTS): barnes.decl.h $(HEADERS) .appflags
+$(OBJECTS): barnes.decl.h SfcLB.decl.h $(HEADERS) .appflags
 barnes.decl.h barnes.def.h: .appflags
+SfcLB.decl.h SfcLB.def.h: .appflags
 plummer.o gen_util.o: $(HEADERS)
 gen: $(HEADERS)
 
