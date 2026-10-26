@@ -1602,8 +1602,13 @@ void DataManager::lbDone(CkReductionMsg *msg){
     tpHome[i] = where[i]-1;
   }
   if(CkMyPe() == 0){
-    CkPrintf("[LB] after step %d: %d of %d TreePieces moved, %.6f s\n",
-             iteration-1, moved, n, CkWallTimer()-lbStart);
+    std::vector<int> perPe(CkNumPes(), 0);
+    for(int i = 0; i < n; i++) perPe[tpHome[i]]++;
+    const int most = std::max_element(perPe.begin(), perPe.end()) - perPe.begin();
+    CkPrintf("[LB] after step %d: %d of %d TreePieces moved, %.6f s; per PE "
+             "min %d max %d (PE %d)\n", iteration-1, moved, n,
+             CkWallTimer()-lbStart,
+             *std::min_element(perPe.begin(), perPe.end()), perPe[most], most);
   }
   delete msg;
   lbMapReady = true;
