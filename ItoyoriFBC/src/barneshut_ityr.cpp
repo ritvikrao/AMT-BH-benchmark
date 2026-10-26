@@ -183,6 +183,23 @@ struct PhaseTimer {
 };
 inline PhaseTimer w_input, w_build, w_forces, w_integrate, w_output, w_total;
 
+// Blob datatype so MPI counts are in elements, not bytes.
+inline MPI_Datatype make_blob_type(size_t bytes) {
+  MPI_Datatype t;
+  MPI_Type_contiguous((int)bytes, MPI_BYTE, &t);
+  MPI_Type_commit(&t);
+  return t;
+}
+
+inline void bcast_bytes(void* buf, size_t bytes, int root, MPI_Comm comm) {
+  constexpr size_t kChunk = size_t(1) << 30;
+  auto* p = static_cast<char*>(buf);
+  for (size_t off = 0; off < bytes; off += kChunk) {
+    size_t len = std::min(kChunk, bytes - off);
+    MPI_Bcast(p + off, (int)len, MPI_BYTE, root, comm);
+  }
+}
+
 #ifdef ITYR_PROF
 // Profiler instrumentation, compiled only into barneshut_ityr_prof.cpp (the
 // same source with ITYR_PROF defined).
@@ -709,16 +726,16 @@ void redistribute_build(const SliceLayout& L, GatherPair* pairs, KeyPair* run,
   }
   int kcnts[MAX_INTER_NODES] = {}, kdspls[MAX_INTER_NODES] = {};
   for (int s = 0; s < ninter; ++s) {
-    kcnts[s] = (int)((L.los[s + 1] - L.los[s]) * sizeof(uint64_t));
-    kdspls[s] = (int)(L.los[s] * sizeof(uint64_t));
+    kcnts[s] = (int)(L.los[s + 1] - L.los[s]);
+    kdspls[s] = (int)L.los[s];
   }
   if (intra == 0) {
 #ifdef ITYR_PROF
     TimePoint t0g = Clock::now();   // intra-0-only scope: local delta (no barrier possible)
 #endif
     collective_timed_cat(tc_dist, [&] {
-      MPI_Allgatherv(krun, (int)(nslice * sizeof(uint64_t)), MPI_BYTE,
-                     gkeys, kcnts, kdspls, MPI_BYTE, topo.inter_mpicomm());
+      MPI_Allgatherv(krun, (int)nslice, MPI_UINT64_T,
+                     gkeys, kcnts, kdspls, MPI_UINT64_T, topo.inter_mpicomm());
     });
 #ifdef ITYR_PROF
     t_pagather.add_local(t0g);
@@ -782,23 +799,17 @@ void redistribute_build(const SliceLayout& L, GatherPair* pairs, KeyPair* run,
       off += (size_t)rcnts[s];
     }
     assert(off == nslice && "alltoallv counts must partition the slice");
-    int bscnts[MAX_INTER_NODES] = {}, bsdspls[MAX_INTER_NODES] = {};
-    int brcnts[MAX_INTER_NODES] = {}, brdspls[MAX_INTER_NODES] = {};
     sdspls[0] = 0;
     for (int s = 1; s < ninter; ++s) sdspls[s] = sdspls[s - 1] + scnts[s - 1];
-    for (int s = 0; s < ninter; ++s) {
-      bscnts[s] = scnts[s] * (int)sizeof(GatherPair);
-      bsdspls[s] = sdspls[s] * (int)sizeof(GatherPair);
-      brcnts[s] = rcnts[s] * (int)sizeof(GatherPair);
-      brdspls[s] = rdspls[s] * (int)sizeof(GatherPair);
-    }
 #ifdef ITYR_PROF
     TimePoint t0v = Clock::now();
 #endif
+    MPI_Datatype pair_type = make_blob_type(sizeof(GatherPair));
     collective_timed_cat(tc_dist, [&] {
-      MPI_Alltoallv(pairs, bscnts, bsdspls, MPI_BYTE,
-                    recv, brcnts, brdspls, MPI_BYTE, topo.inter_mpicomm());
+      MPI_Alltoallv(pairs, scnts, sdspls, pair_type,
+                    recv, rcnts, rdspls, pair_type, topo.inter_mpicomm());
     });
+    MPI_Type_free(&pair_type);
 #ifdef ITYR_PROF
     t_palltoallv.add_local(t0v);
 #endif
@@ -861,16 +872,18 @@ inline void gather_full_bodies(const SliceLayout& L, Body64* live, Body64* bodie
   if (intra != 0) return;
   int cnts[MAX_INTER_NODES] = {}, dspls[MAX_INTER_NODES] = {};
   for (int s = 0; s < (int)L.ninter; ++s) {
-    cnts[s] = (int)((L.los[s + 1] - L.los[s]) * sizeof(Body64));
-    dspls[s] = (int)(L.los[s] * sizeof(Body64));
+    cnts[s] = (int)(L.los[s + 1] - L.los[s]);
+    dspls[s] = (int)L.los[s];
   }
   if (inter == 0) memcpy(bodies + L.slice_lo, live, L.nslice * sizeof(Body64));
   if (L.ninter == 1) return;   // single node: the memcpy above is the gather
+  MPI_Datatype body_type = make_blob_type(sizeof(Body64));
   collective_timed_cat(tc_dist, [&] {
     MPI_Gatherv(inter == 0 ? MPI_IN_PLACE : live,
-                inter == 0 ? 0 : (int)(L.nslice * sizeof(Body64)), MPI_BYTE,
-                bodies, cnts, dspls, MPI_BYTE, 0, topo.inter_mpicomm());
+                inter == 0 ? 0 : (int)L.nslice, body_type,
+                bodies, cnts, dspls, body_type, 0, topo.inter_mpicomm());
   });
+  MPI_Type_free(&body_type);
 }
 
 // build_rec over the local compact replica: the fold reads mass/x/y/z at the
@@ -966,8 +979,8 @@ NodeReplicas make_node_replicas(const BuildResult& br, CompactBody* compact,
       // (allocator::get_owner -> inter_rank).
       int root = ityr::common::topology::inter_rank(alloc.get_owner(br.tree));
       collective_timed_cat(tc_ptr, [&] {
-        MPI_Bcast(tree_local ? (void*)br.tree : r.my_tree, (int)br.tree_bytes, MPI_BYTE, root,
-                  topo.inter_mpicomm());
+        bcast_bytes(tree_local ? (void*)br.tree : r.my_tree, br.tree_bytes, root,
+                    topo.inter_mpicomm());
       });
     }
     r.owns_replica = true;    // this node frees whatever it ended up holding
@@ -1128,12 +1141,13 @@ void scatter_input(const Body64* input, const SliceLayout& L, Body64* live) {
   }
   int cnts[MAX_INTER_NODES] = {}, dspls[MAX_INTER_NODES] = {};
   for (int s = 0; s < ninter; ++s) {
-    cnts[s] = (int)((L.los[s + 1] - L.los[s]) * sizeof(Body64));
-    dspls[s] = (int)(L.los[s] * sizeof(Body64));
+    cnts[s] = (int)(L.los[s + 1] - L.los[s]);
+    dspls[s] = (int)L.los[s];
   }
+  MPI_Datatype body_type = make_blob_type(sizeof(Body64));
   collective_timed_cat(tc_misc, [&] {
     if (intra == 0) {
-      MPI_Scatterv(input, cnts, dspls, MPI_BYTE, live, (int)(L.nslice * sizeof(Body64)), MPI_BYTE,
+      MPI_Scatterv(input, cnts, dspls, body_type, live, (int)L.nslice, body_type,
                    0, topo.inter_mpicomm());
       if (L.nslice > 0)
         ityr::ito::flush_window_data(live, L.nslice * sizeof(Body64));
@@ -1143,6 +1157,7 @@ void scatter_input(const Body64* input, const SliceLayout& L, Body64* live) {
     // the scatter before every rank's first bounds/keys scan.
     ityr::common::mpi_barrier(MPI_COMM_WORLD);
   });
+  MPI_Type_free(&body_type);
 }
 
 // ---------------- tree-build plan (SPMD) ----------------
@@ -1304,14 +1319,16 @@ BuildResult build_tree_spmd(const BuildCtx& ctx, size_t n, const Bounds& bd) {
   vector<int> rcnts((size_t)P), rdspls((size_t)P);
   int roff = 0;
   for (int q = 0; q < P; ++q) {
-    rcnts[q] = nplans[q] * (int)sizeof(PlanNode);
+    rcnts[q] = nplans[q];
     rdspls[q] = roff;
     roff += rcnts[q];
   }
+  MPI_Datatype plan_type = make_blob_type(sizeof(PlanNode));
   collective_timed_cat(tc_ptr, [&] {
-    MPI_Allgatherv(sub.data(), (int)(sub.size() * sizeof(PlanNode)), MPI_BYTE,
-                   plan.data() + 1, rcnts.data(), rdspls.data(), MPI_BYTE, plan_comm);
+    MPI_Allgatherv(sub.data(), (int)sub.size(), plan_type,
+                   plan.data() + 1, rcnts.data(), rdspls.data(), plan_type, plan_comm);
   });
+  MPI_Type_free(&plan_type);
   // receiver-side fixups: every rank remaps all the blocks' parent/child refs (+ the block's
   // global base; the sub-root's parent sentinel -1 -> the global root 0), then the root's
   // child array from the published positions.
@@ -1454,13 +1471,15 @@ BuildResult build_step(BuildReplicas& r, size_t n, const Bounds& bd,
   if (intra == 0) {
     int ccnts[MAX_INTER_NODES] = {}, cdspls[MAX_INTER_NODES] = {};
     for (int s = 0; s < (int)r.L.ninter; ++s) {
-      ccnts[s] = (int)((r.L.los[s + 1] - r.L.los[s]) * sizeof(CompactBody));
-      cdspls[s] = (int)(r.L.los[s] * sizeof(CompactBody));
+      ccnts[s] = (int)(r.L.los[s + 1] - r.L.los[s]);
+      cdspls[s] = (int)r.L.los[s];
     }
+    MPI_Datatype compact_type = make_blob_type(sizeof(CompactBody));
     collective_timed_cat(tc_dist, [&] {
-      MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_BYTE, compact, ccnts, cdspls, MPI_BYTE,
+      MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_BYTE, compact, ccnts, cdspls, compact_type,
                      ityr::common::topology::instance::get().inter_mpicomm());
     });
+    MPI_Type_free(&compact_type);
   }
   // Order the leader's in-place Allgatherv before the intra peers read the
   // compact in the tree fold (the replica is the node-wide shm buffer).
@@ -1692,11 +1711,12 @@ void combine_accel(NodeRepPointers& rep, size_t n, size_t chunk) {
         std::vector<int> lens(runs.size());
         std::vector<MPI_Aint> disps(runs.size());
         for (size_t k = 0; k < runs.size(); ++k) {
-          lens[k] = (int)(runs[k].len * sizeof(ForceResult));
+          lens[k] = (int)runs[k].len;
           disps[k] = (MPI_Aint)(runs[k].off * sizeof(ForceResult));
         }
+        MPI_Datatype force_type = make_blob_type(sizeof(ForceResult));
         MPI_Datatype t;
-        MPI_Type_create_hindexed((int)runs.size(), lens.data(), disps.data(), MPI_BYTE, &t);
+        MPI_Type_create_hindexed((int)runs.size(), lens.data(), disps.data(), force_type, &t);
         MPI_Type_commit(&t);
         if (acc_window) {
           // The acc offsets are the same on every node: displacement relative
@@ -1709,6 +1729,7 @@ void combine_accel(NodeRepPointers& rep, size_t n, size_t chunk) {
           MPI_Win_flush(peer, alloc.win());
         }
         MPI_Type_free(&t);
+        MPI_Type_free(&force_type);
       }
       ityr::ito::dealloc_future_data(all, mask_words * ninter * sizeof(uint64_t));
 #ifdef ITYR_PROF
@@ -1868,14 +1889,17 @@ std::pair<double, double> energy_phase(BuildReplicas& r, const NodeRepPointers& 
     }
     int cnts[MAX_INTER_NODES] = {}, dspls[MAX_INTER_NODES] = {};
     for (int s = 0; s < ninter; ++s) {
-      cnts[s] = (int)((r.L.los[s + 1] - r.L.los[s]) * sizeof(Mv));
-      dspls[s] = (int)(r.L.los[s] * sizeof(Mv));
+      cnts[s] = (int)(r.L.los[s + 1] - r.L.los[s]);
+      dspls[s] = (int)r.L.los[s];
     }
-    if (intra == 0)
+    if (intra == 0) {
+      MPI_Datatype mv_type = make_blob_type(sizeof(Mv));
       collective_timed_cat(tc_energy, [&] {
-        MPI_Gatherv(r.pairs, (int)(nslice * sizeof(Mv)), MPI_BYTE,
-                    m.vel_scratch, cnts, dspls, MPI_BYTE, 0, topo.inter_mpicomm());
+        MPI_Gatherv(r.pairs, (int)nslice, mv_type,
+                    m.vel_scratch, cnts, dspls, mv_type, 0, topo.inter_mpicomm());
       });
+      MPI_Type_free(&mv_type);
+    }
     if (inter == 0 && intra == 0) {
       vector<double> v(n);
       const Mv* mv = (const Mv*)m.vel_scratch;
@@ -2010,9 +2034,8 @@ int main(int argc, char** argv) {
 
   ityr::init();
 
-  // 64 GiB per node fits the 32M benchmark; set BARNESHUT_NODE_ARENA_MB=0 to
-  // use the future pool instead.
-  long long arena_mb = 65536;
+  // 72 GiB leaves headroom for 128M with leaf 10.
+  long long arena_mb = 73728;
   if (const char* arena_env = getenv("BARNESHUT_NODE_ARENA_MB"))
     arena_mb = atoll(arena_env);
   if (arena_mb > 0) {
