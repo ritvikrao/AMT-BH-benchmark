@@ -54,6 +54,9 @@ DataManager::DataManager() :
   numParticlesArrived(0),
   numParticlesExpected(0),
   flushDest(-1),
+  lbBoxReady(false),
+  lbMapReady(false),
+  lbStart(0.0),
   numLocalTreePieces(-1),
   doneTreeBuild(false),
   treeMomentsReady(false),
@@ -1565,11 +1568,53 @@ void DataManager::advance(CkReductionMsg *msg){
       delete[] buf;
     }
   }
+  else if(globalParams.lbPeriod > 0 && iteration % globalParams.lbPeriod == 0){
+    // Every traversal of the step is over (this is the reduction that
+    // follows them), so no PE can still be asking a TreePiece for data from
+    // this step's tree: they may move now.
+    lbBox = myBox;
+    lbBoxReady = true;
+    if(CkMyPe() == 0){
+      lbStart = CkWallTimer();
+      treePieceProxy.atSync();
+    }
+    if(lbMapReady) resumeAfterLB();
+  }
   else{
     cb = CkCallback(CkIndex_DataManager::recvUnivBoundingBox(NULL),thisProxy);
     contribute(sizeof(BoundingBox),&myBox,BoundingBoxGrowReductionType,cb);
   }
   delete msg;
+}
+
+// Where every TreePiece is after the balancer ran: slot i holds its PE + 1
+// (TreePiece::ResumeFromSync). The next exchange sends particles there, and
+// buildLocalDescriptors checks the map against the TreePieces present.
+void DataManager::lbDone(CkReductionMsg *msg){
+  const int n = msg->getSize()/sizeof(int);
+  const int *where = (const int *)msg->getData();
+  CkAssert(n == globalParams.numTreePieces);
+  homeOf(0);   // fills tpHome on first use
+  int moved = 0;
+  for(int i = 0; i < n; i++){
+    CkAssert(where[i] > 0);
+    if(tpHome[i] != where[i]-1) moved++;
+    tpHome[i] = where[i]-1;
+  }
+  if(CkMyPe() == 0){
+    CkPrintf("[LB] after step %d: %d of %d TreePieces moved, %.6f s\n",
+             iteration-1, moved, n, CkWallTimer()-lbStart);
+  }
+  delete msg;
+  lbMapReady = true;
+  if(lbBoxReady) resumeAfterLB();
+}
+
+void DataManager::resumeAfterLB(){
+  lbBoxReady = false;
+  lbMapReady = false;
+  CkCallback cb(CkIndex_DataManager::recvUnivBoundingBox(NULL),thisProxy);
+  contribute(sizeof(BoundingBox),&lbBox,BoundingBoxGrowReductionType,cb);
 }
 
 #ifdef PE_DIAG

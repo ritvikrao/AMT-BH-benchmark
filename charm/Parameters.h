@@ -55,6 +55,11 @@ struct Parameters {
   // else. Opt-in until serving is cheaper; MULTINODE.md, "Traversal".
   bool balanceByCost;
 
+  // -lbperiod=k: run Charm++'s load balancer (+balancer, at run time) after
+  // every k-th step, migrating TreePieces by their measured load. 0 (the
+  // default) never balances.
+  int lbPeriod;
+
   int iterations;
 
   // Bit per Phase; see Timers.h. 0 means no timing at all.
@@ -89,6 +94,7 @@ struct Parameters {
     p | theta;
     p | cacheLineSize;
     p | balanceByCost;
+    p | lbPeriod;
     p | iterations;
     p | timerMask;
     p | dumpStep;

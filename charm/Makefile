@@ -43,7 +43,7 @@ ifneq ($(TRACE),none)
 endif
 
 CXXFLAGS += $(OPTS) -I$(INCPATH)
-LDFLAGS  += $(OPTS) -L. -language charm++ -module RotateLB -memory os $(TRACEMODE)
+LDFLAGS  += $(OPTS) -L. -language charm++ -module CommonLBs -memory os $(TRACEMODE)
 
 CXX = $(CHARMC)
 CC  = $(CXX)

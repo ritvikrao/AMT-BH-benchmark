@@ -50,7 +50,7 @@ class TreePiece : public CBase_TreePiece {
 
   public:
   TreePiece();
-  TreePiece(CkMigrateMessage *) {}
+  TreePiece(CkMigrateMessage *m);
 
   int getIndex() {return thisIndex;}
 
@@ -69,6 +69,11 @@ class TreePiece : public CBase_TreePiece {
 
   void quiescence();
   int getIteration();
+
+  // Load balancing (-lbperiod): atSync() hands the element to the balancer
+  // between steps, ResumeFromSync() reports where it landed.
+  void atSync();
+  void ResumeFromSync();
 
   void pup(PUP::er &p);
 };

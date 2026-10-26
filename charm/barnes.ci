@@ -59,6 +59,7 @@ mainmodule barnes {
     entry void requestParticles(RequestMsg *msg);
     entry void requestNode(RequestMsg *msg);
     entry void quiescence();
+    entry void atSync();
   };
 
   group DataManager {
@@ -82,6 +83,7 @@ mainmodule barnes {
 #endif
 
     entry void recvUnivBoundingBox(CkReductionMsg *msg);
+    entry void lbDone(CkReductionMsg *msg);
 
     entry void quiescence();
   };

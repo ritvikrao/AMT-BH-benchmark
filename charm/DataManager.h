@@ -123,9 +123,18 @@ class DataManager : public CBase_DataManager {
   CkVec<ParticleMsg *> arrivedParticleMsgs;
   long numParticlesArrived;
   long numParticlesExpected;
-  // Home PE of every TreePiece (no migration, so also its location), so that a
-  // sender can address the DM rather than the TreePiece.
+  // PE of every TreePiece, so that a sender can address the DM rather than
+  // the TreePiece: the home PE until a load balancing step, then wherever
+  // the balancer put it (lbDone).
   std::vector<int> tpHome;
+  // Load balancing between steps (-lbperiod). The bounding box that starts
+  // the next step waits here until both this PE's advance() and the new
+  // TreePiece map (lbDone) are in, which can arrive in either order.
+  BoundingBox lbBox;
+  bool lbBoxReady;
+  bool lbMapReady;
+  double lbStart;
+  void resumeAfterLB();
   // Flush state: runs of particles bound for flushDest, sent as one message.
   int flushDest;
   std::vector<std::pair<Particle *, int> > flushRuns;
@@ -256,6 +265,7 @@ class DataManager : public CBase_DataManager {
   void recvNode(NodeReplyMsg *msg);
 
   void recvUnivBoundingBox(CkReductionMsg *msg);
+  void lbDone(CkReductionMsg *msg);
 
   void quiescence();
 

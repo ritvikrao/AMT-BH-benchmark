@@ -21,6 +21,25 @@ TreePiece::TreePiece() :
   numTraversalsDone(0)
 {
   myDM = dataManagerProxy.ckLocalBranch();
+  usesAtSync = true;
+}
+
+// A migrated TreePiece starts exactly like a new one; pup() then restores
+// the step count.
+TreePiece::TreePiece(CkMigrateMessage *m) :
+  CBase_TreePiece(m),
+  localTraversalState(),
+  remoteTraversalState(),
+  localStateID(0),
+  remoteStateID(1),
+  localTraversalWorker(),
+  remoteTraversalWorker(),
+  totalNumTraversals(2),
+  iteration(0),
+  numTraversalsDone(0)
+{
+  myDM = dataManagerProxy.ckLocalBranch();
+  usesAtSync = true;
 }
 
 void TreePiece::prepare(Node<ForceData> *_root, Node<ForceData> **buckets, int bucketStart, int bucketEnd){
@@ -219,10 +238,33 @@ int TreePiece::getIteration() {
   return iteration;
 }
 
+// A TreePiece carries nothing between steps but its step count: its key
+// range, particles, buckets and walk state are all rebuilt by the next
+// step's decomposition, on whichever PE it then lives. So migrating one
+// moves no particles -- the next exchange sends them to the new PE.
 void TreePiece::pup(PUP::er &p){
   p | iteration;
   if(p.isUnpacking()){
+    usesAtSync = true;
+    myDM = dataManagerProxy.ckLocalBranch();
   }
+}
+
+// Called by DataManager::advance once every traversal of the step is over:
+// until then a TreePiece answers other PEs' requests from this PE's tree, and
+// must not move.
+void TreePiece::atSync(){
+  AtSync();
+}
+
+// Every DataManager needs every TreePiece's location before the next exchange
+// (DataManager::homeOf). Each element fills its own slot with its PE + 1.
+void TreePiece::ResumeFromSync(){
+  const int n = globalParams.numTreePieces;
+  std::vector<int> where(n, 0);
+  where[thisIndex] = CkMyPe() + 1;
+  CkCallback cb(CkIndex_DataManager::lbDone(NULL), dataManagerProxy);
+  contribute(n*sizeof(int), where.data(), CkReduction::sum_int, cb);
 }
 
 #include "Traversal_defs.h"

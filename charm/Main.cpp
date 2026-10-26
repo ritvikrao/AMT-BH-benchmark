@@ -141,6 +141,9 @@ void Main::setParameters(CkArgMsg *m){
   globalParams.balanceByCost = (balance == "cost");
   CkPrintf("balance: %s\n", balance.c_str());
 
+  globalParams.lbPeriod = params.getiparam("lbperiod", DEFAULT_LB_PERIOD, table);
+  CkPrintf("lbperiod: %d\n", globalParams.lbPeriod);
+
   it = table.find("timers");
   string timerSpec = (it == table.end()) ? string(DEFAULT_TIMERS) : it->second;
   string badPhase;
@@ -524,6 +527,7 @@ void Main::usage(){
   usage["killat"] = "num single steps";
   usage["chunkDepth"] = "when fetching remote data, what depth of subtree to fetch";
   usage["yield"] = "how many buckets to process before yielding processor";
+  usage["lbperiod"] = "balance load (+balancer) after every Nth step; 0, the default, never";
   usage["output"] = "write ParaView snapshots with this path prefix, giving "
                     "<prefix>.pvd to open; omit for no output";
   usage["outputfreq"] = "write a snapshot every Nth step (default 1)";
