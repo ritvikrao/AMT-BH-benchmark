@@ -61,6 +61,12 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
       ([results](results/perf-1node-2026-10-21.txt)); verified across 1, 2 and 4
       Delta nodes ([results](results/correctness-2026-10-21.txt)). Open: leaf 1
       (0.556 vs HPX 0.322 at 64 cores), load imbalance at 64+ PEs.
+- [ ] **LB** Dynamic load balancing (branch `charm-lb`): `-lbperiod=k` migrates
+      TreePieces between steps; `+balancer SfcLB` is ChaNGa's SFC cut. Generic
+      balancers make the traversal up to 10x slower (they scatter a PE's
+      TreePieces); SfcLB is 1.06x (8x15) and 1.10x (1x120) faster on 4M, one node
+      ([results](results/lb-1node-2026-10-26.txt)). Open: leave step 0 out of
+      the first measurement; charge resumed walks to their TreePiece; multi-node.
 - [x] **2** Correctness matrix on 1, 2 and 4 nodes passes
       ([results](results/correctness-2026-10-14.txt)). `run.sh` takes `NODES`.
 - [x] **3a** Particle exchange: DM-to-DM with exact counts (bbce8b0). Verified on

@@ -1,0 +1,35 @@
+Dynamic load balancing on one Delta node, 2026-10-26 (branch charm-lb).
+Charm++ recharm 9809d0a, Reconverse a8efcfc, LCI d366a405. Issue #7 4M
+three-galaxy input, leaf 10, theta 0.5, eps 1e-11, -ppc=2000 (4016 TreePieces).
+Energies identical to no balancing in every run below.
+
+Generic balancers (job 23228127, cn042; 6 steps, -lbperiod=2), s/step:
+  balancer         step1  step2  step3  step4  step5   moved after 1 / 3
+  none             0.128  0.128  0.129  0.192  0.143
+  RefineLB         0.130  1.043  1.020  0.548  0.385    838 /  402
+  GreedyRefineLB   0.129  1.110  1.153  0.789  0.684   1348 / 2144
+  GreedyLB         0.132  1.601  1.412  1.009  0.918   4000 / 3983
+  Interactions unchanged; the extra time is fetching and serving remote tree
+  data. GreedyRefineLB put 261 TreePieces on PE 0 (34 before): a PE's tree is
+  built from all its TreePieces, so scattering them over the volume multiplies
+  remote fetches, and the measured per-object loads stop predicting anything.
+
+SfcLB (ChaNGa's MultistepLB_SFC cut, curve order; job 23228708, cn040; 8 steps):
+  layout  balancing        steps 1-7, s/step
+  8x15    none             0.129 0.127 0.127 0.127 0.127 0.127 0.127
+  8x15    SfcLB every 2    0.132 0.131 0.126 0.126 0.125 0.118 0.121
+  8x15    SfcLB every step 0.139 0.123 0.121 0.121 0.120 0.120 0.120
+  1x120   none             0.160 0.159 0.162 0.156 0.156 0.151 0.150
+  1x120   SfcLB every 2    0.157 0.157 0.162 0.146 0.150 0.136 0.142
+  Steady state: 8x15 0.127 -> 0.120 (1.06x), 1x120 0.153 -> 0.139 (1.10x).
+  Trace (8x15, every 2): per-PE traversal 15-66 -> 31-57 ms, busy max/mean
+  1.26 -> 1.15, mean idle 41 -> 28 ms, utilization 65% -> 72%.
+  The first balancing does little: its measurement includes step 0, whose
+  input phase (~1.5 s) lands in the background load (0.028 s per piece,
+  against 0.0025 later) and swamps the TreePieces' own loads.
+  Left: busy max/mean 1.15. PEs 60-74 (one process) stay light (52 vs 60-64
+  ms traversal+fetch). Walks resumed by fetched data run in the DataManager
+  and are charged to the PE's background, spread evenly over all pieces.
+
+Traces: /work/hdd/mzu/rao1/bh-multinode/traces/recharm-lb-2026-10-26/8x15-GreedyRefineLB
+        /work/hdd/mzu/rao1/bh-multinode/traces/recharm-sfclb-2026-10-26/8x15-SfcLB
