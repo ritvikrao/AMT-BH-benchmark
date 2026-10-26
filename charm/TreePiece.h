@@ -75,6 +75,13 @@ class TreePiece : public CBase_TreePiece {
   void atSync();
   void ResumeFromSync();
 
+  // Work done for this TreePiece outside its own entry methods -- the walks
+  // that resume in DataManager::recvNode/recvParticles when fetched data
+  // arrives -- is charged to it between these two calls, so the balancer
+  // sees it as this TreePiece's load rather than as the PE's background.
+  void startLoad(){ getCkLocRec()->startTiming(1); }
+  void stopLoad(){ getCkLocRec()->stopTiming(1); }
+
   void pup(PUP::er &p);
 };
 

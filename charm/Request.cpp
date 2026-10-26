@@ -13,6 +13,8 @@ void Request::deliverParticles(int num){
   for(int i = 0; i < requestors.length(); i++){
     Requestor &req = requestors[i];
     TraversalWorker *worker = req.worker;
+    TreePiece *owner = worker->getOwner();
+    owner->startLoad();
 
     worker->setContext(req.context);
 
@@ -26,6 +28,7 @@ void Request::deliverParticles(int num){
     if(state->decrPending()){
       worker->done();
     }
+    owner->stopLoad();
   }
 
   requestors.clear();
@@ -35,6 +38,8 @@ void Request::deliverNode(){
   for(int i = 0; i < requestors.length(); i++){
     Requestor &req = requestors[i];
     TraversalWorker *worker = req.worker;
+    TreePiece *owner = worker->getOwner();
+    owner->startLoad();
 
     worker->setContext(req.context);
 
@@ -49,6 +54,7 @@ void Request::deliverNode(){
     if(state->decrPending()){
       worker->done();
     }
+    owner->stopLoad();
   }
 
   requestors.clear();

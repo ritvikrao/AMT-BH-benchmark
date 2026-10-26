@@ -1544,6 +1544,11 @@ void DataManager::advance(CkReductionMsg *msg){
   timers.finishStep();
 
   iteration++;
+  // Step 0 is not a fair sample for the balancer: it includes reading the
+  // input (~1.5 s at 4M, measured as background load) and the first
+  // decomposition's cold start. Measure from step 1; the first balancing is
+  // after step 1 at the earliest (above).
+  if(iteration == 1 && globalParams.lbPeriod > 0) LBClearLoads();
   CkCallback cb;
   if(iteration == globalParams.iterations){
 #ifdef PE_DIAG
@@ -1568,7 +1573,8 @@ void DataManager::advance(CkReductionMsg *msg){
       delete[] buf;
     }
   }
-  else if(globalParams.lbPeriod > 0 && iteration % globalParams.lbPeriod == 0){
+  else if(globalParams.lbPeriod > 0 && iteration > 1 &&
+          iteration % globalParams.lbPeriod == 0){
     // Every traversal of the step is over (this is the reduction that
     // follows them), so no PE can still be asking a TreePiece for data from
     // this step's tree: they may move now.

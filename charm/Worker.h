@@ -139,6 +139,7 @@ class TraversalWorker {
   }
 
   const WalkContext &getContext() const { return ctx; }
+  TreePiece *getOwner() const { return ownerTreePiece; }
   // Starts a walk (or resumes one after a fetch) for c's group: binds the
   // interaction lists or loads the packet. endWalk() applies what the walk
   // gathered; every walk ends with it.
