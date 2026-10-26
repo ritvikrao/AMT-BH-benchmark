@@ -31,5 +31,25 @@ SfcLB (ChaNGa's MultistepLB_SFC cut, curve order; job 23228708, cn040; 8 steps):
   ms traversal+fetch). Walks resumed by fetched data run in the DataManager
   and are charged to the PE's background, spread evenly over all pieces.
 
-Traces: /work/hdd/mzu/rao1/bh-multinode/traces/recharm-lb-2026-10-26/8x15-GreedyRefineLB
-        /work/hdd/mzu/rao1/bh-multinode/traces/recharm-sfclb-2026-10-26/8x15-SfcLB
+SfcLB after the two fixes (2ffafad: loads cleared after step 0, no balancing
+before step 1 is measured; walks resumed by fetched data timed onto their
+TreePiece; job 23228967, cn029; 8 steps):
+  layout  balancing        steps 1-7, s/step
+  8x15    none             0.132 0.130 0.128 0.127 0.128 0.128 0.129
+  8x15    SfcLB every 2    0.132 0.127 0.121 0.121 0.121 0.121 0.119
+  8x15    SfcLB every step 0.137 0.127 0.119 0.121 0.122 0.121 0.119
+  1x120   none             0.154 0.159 0.158 0.158 0.157 0.151 0.149
+  1x120   SfcLB every 2    0.154 0.145 0.147 0.139 0.163 0.138 0.136
+  Steady state (steps 3-7): 8x15 0.128 -> 0.121 (1.06x); 1x120 steps 6-7
+  0.150 -> 0.137 (1.10x). The first pass now measures 1.20-1.23 max/mean (was
+  1.04-1.05) and does the balancing; before, it took the second pass.
+  Trace (8x15, every 2), against the SfcLB trace before the fixes:
+    per-PE traversal after the first pass 35-58 ms (before: still 15-66);
+    busy max/mean at the end 1.10-1.12 (before: 1.14-1.15); utilization 73-74%.
+  Where the rest goes: SfcLB predicts 1.03-1.05 and the steps measure about
+  1.1; the remaining limit at this size is the unbalanced decomposition and
+  exchange (about a quarter of the step), not the traversal.
+
+Trace: /work/hdd/mzu/rao1/bh-multinode/traces/recharm-sfclb2-2026-10-26/8x15-SfcLB
+(the GreedyRefineLB and pre-fix SfcLB traces were superseded and deleted; their
+run logs stay next to where they were).
