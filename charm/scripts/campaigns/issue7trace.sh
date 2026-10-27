@@ -1,25 +1,33 @@
-# Reproduce the Projections trace of 2026-10-26 (Delta, 1 node, 8 x 15 = 120
-# PEs, barnes 832c251 on Charm++ recharm): the issue #7 three-galaxy input at
-# 4M bodies with the issue's flags, 4 steps, traced. Sourced by job.sh:
+# Reproduce the Projections traces of 2026-10-26 (Delta job 23226160, one node,
+# barnes 832c251 on Charm++ recharm 9809d0a): the issue #7 three-galaxy input at
+# 4M bodies with the issue's flags, 4 steps, in the two layouts that job ran
+# back to back -- one process holding all 120 PEs (the "1x120" trace), then
+# one process per NUMA domain, 8 x 15 (the "8x15" trace). Sourced by job.sh:
 #
 #   BIN=$BH_WORK/bin/barnes-832c251-recharm-proj \
-#     scripts/submit.sh 1 30 issue7trace [N] [STEPS]
+#     scripts/submit.sh 1 20 issue7trace [N] [STEPS]
 #
 # BIN must be a Projections-linked binary (make TRACE=projections). Input is
 # $DATA/n<N>.csv: the DataGenerator three-galaxy collision with masses scaled
 # by G_data/1.488185170503113e-34 (data/PROVENANCE.md), so that the issue's
-# -G gives the generator's accelerations. Trace goes to
-# $BH_WORK/traces/<tag>-<job>/1x<PEs>, the layout the reference used.
+# -G gives the generator's accelerations. Traces go to
+# $BH_WORK/traces/<binary>-<job>/{1x120,8x15}, as the reference's did.
+# Reference (Delta cn127): 1x120 0.809 s/step, 21.6 s wall; 8x15 0.619 s/step,
+# 4.4 s wall; energies identical between the two layouts.
 N=${1:-4000000}
 STEPS=${2:-4}
 PPNODE=$NUMA_DOMAINS
 PPN=$PES_PER_DOMAIN
 PES=$((PPNODE * PPN))
-TROOT=$BH_WORK/traces/$(basename "$BIN")-${SLURM_JOB_ID:-nojob}/1x$PES
-mkdir -p "$TROOT"
-echo "=== layout: $PPNODE processes x $PPN PEs; cores $(core_map "$PES"); traceroot $TROOT"
+TDIR=$BH_WORK/traces/$(basename "$BIN")-${SLURM_JOB_ID:-nojob}
 PHYS="-G=1.488185170503113e-34 -dtime=0.0416667 -eps=1e-11"
 TUNE="-ppc=2000"
-run_one issue7trace "$N" 1 "$PPNODE" "$PPN" 1 "$STEPS" -theta=0.5 -b=10 +traceroot "$TROOT"
-ls -l "$TROOT" | head -5; echo "... $(ls "$TROOT" | wc -l) files"
+echo "=== cores $(core_map "$PES"); traces under $TDIR"
+for layout in "1 $PES" "$PPNODE $PPN"; do
+  set -- $layout
+  troot=$TDIR/$1x$2
+  mkdir -p "$troot"
+  run_one "trace-$1x$2" "$N" 1 "$1" "$2" 1 "$STEPS" -theta=0.5 -b=10 +traceroot "$troot"
+  echo "    $(ls "$troot" | wc -l) trace files in $troot"
+done
 true
