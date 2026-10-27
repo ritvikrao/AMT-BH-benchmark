@@ -70,9 +70,13 @@ export SLURM_CPU_BIND=none SRUN_CPU_BIND=none
 #             backed up.
 #   wholenode/standard: up to 16 nodes, whole nodes, queues but backfills
 #             short jobs within minutes to hours.
+# Measured 2026-10-27 17:00 CDT (sbatch --test-only, 1 node, 30 min):
+# standard 1.3 h, wide 1.6 h, debug 8 h, highmem 14 h, shared 13 d,
+# wholenode 5 d. So the 'fast' route is standard, and the estimates move;
+# submit.sh asks every time.
 ACCOUNTS=${ACCOUNTS:-asc050025}
-FAST_PARTITION=shared
-FAST_MAX_NODES=1
+FAST_PARTITION=standard
+FAST_MAX_NODES=16
 FAST_MAX_MINUTES=240
 BIG_PARTITION=wholenode
 # --exclusive: on shared, the whole node (all 128 cores and its memory in the
