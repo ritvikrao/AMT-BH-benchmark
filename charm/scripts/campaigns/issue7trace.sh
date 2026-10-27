@@ -20,6 +20,9 @@ PPNODE=$NUMA_DOMAINS
 PPN=$PES_PER_DOMAIN
 PES=$((PPNODE * PPN))
 TDIR=$BH_WORK/traces/$(basename "$BIN")-${SLURM_JOB_ID:-nojob}
+# Logs carry the binary's name: run_one skips a run whose log already ends in a
+# graceful exit, so two binaries sharing $LOGS would otherwise share one log.
+BT=$(basename "$BIN"); BT=${BT#barnes-}; BT=${BT%-recharm-proj}
 PHYS="-G=1.488185170503113e-34 -dtime=0.0416667 -eps=1e-11"
 TUNE="-ppc=2000"
 echo "=== cores $(core_map "$PES"); traces under $TDIR"
@@ -27,7 +30,7 @@ for layout in "1 $PES" "$PPNODE $PPN"; do
   set -- $layout
   troot=$TDIR/$1x$2
   mkdir -p "$troot"
-  run_one "trace-$1x$2" "$N" 1 "$1" "$2" 1 "$STEPS" -theta=0.5 -b=10 +traceroot "$troot"
+  run_one "${BT}-trace-$1x$2" "$N" 1 "$1" "$2" 1 "$STEPS" -theta=0.5 -b=10 +traceroot "$troot"
   echo "    $(ls "$troot" | wc -l) trace files in $troot"
 done
 true
