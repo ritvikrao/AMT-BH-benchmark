@@ -68,12 +68,14 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
       after one pass: loads are measured from step 1 and resumed walks are
       charged to their TreePiece ([results](results/lb-1node-2026-10-26.txt)).
       Open: multi-node.
-- [x] **D** Decomposition rounds: an unsplit histogram bin
-      keeps its descriptor instead of a pass over every particle each round, and
-      costs are summed only under `-balance=cost`. 4M, one node: 1.06x (8x15),
-      1.03x (1x120); histogram 13 -> 7.5 ms per step ([results](results/decomp-1node-2026-10-27.txt)).
-      Open: the ~24 rounds themselves (reuse last step's leaves; octree rounds);
-      faster sorts were tried and were slower.
+- [x] **D** Decomposition rounds ([results](results/decomp-1node-2026-10-27.txt)):
+      (1) an unsplit histogram bin keeps its descriptor instead of a pass over
+      every particle each round, and costs are summed only under `-balance=cost`;
+      (2) each step after the first starts from last step's leaves
+      (`-reuseleaves`, default 1): one round instead of ~24, splitting leaves
+      grown past the target and merging light sibling families to make room.
+      4M, one node, both together: 1.11x (8x15), 1.13x (8x15 SfcLB), 1.33x
+      (1x120); energies identical. Faster particle sorts were tried and were slower.
 - [x] **2** Correctness matrix on 1, 2 and 4 nodes passes
       ([results](results/correctness-2026-10-14.txt)). `run.sh` takes `NODES`.
 - [x] **3a** Particle exchange: DM-to-DM with exact counts (bbce8b0). Verified on
@@ -100,6 +102,7 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
 
 | date | machine | what | commit | job |
 |---|---|---|---|---|
+| 2026-10-27 | Delta, 1 node | **Leaves reused across steps** (`-reuseleaves=1`): 4M energies identical to fix 1 alone on 8x15 and 1x120, with and without SfcLB, and with `-balance=cost` vs `-reuseleaves=0`; 400k with forced merges and splits identical ([results](results/decomp-1node-2026-10-27.txt)) | 1430dd3 | 23255462 |
 | 2026-10-27 | Delta, 1 node | **Histogram rounds** carry unsplit bins' descriptors: 4M energies identical old vs new on 8x15 and 1x120, with and without SfcLB; 400k by count and by cost identical ([results](results/decomp-1node-2026-10-27.txt)) | this commit | 23253180 |
 | 2026-09-10 | Delta, 1 node | 1-120 cores, both layouts, 138 runs ([report](results/REPORT-1node-2026-09-10.txt)) | 2cdf1d5 | 21945686 |
 | 2026-10-22 | Delta, 1 node | **Particle messages capped at 1 GB** (issue #7 comment: 32M bodies on 1 PE died with `CmiAlloc: size <= 0`, as Charm++ sizes messages with an int). 32M on 1 PE: e02ff61 crashes, fix runs, energies identical to 1x2; with 64 KB messages, 2M on 1x8 and 8x15 identical to e02ff61 | this commit | 23112375 |
