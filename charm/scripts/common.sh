@@ -24,9 +24,10 @@ if [ -z "${MACHINE:-}" ]; then
        return 1 2>/dev/null || exit 1 ;;
   esac
 fi
-: "${PE_OFFSET_IN_DOMAIN:=0}"
 # shellcheck disable=SC1090
 . "$BH_SCRIPTS/machines/$MACHINE.sh"
+# After the machine file, so that one may set its own default offset.
+: "${PE_OFFSET_IN_DOMAIN:=0}"
 
 BIN=${BIN:-$BH_CHARM/barnes}
 

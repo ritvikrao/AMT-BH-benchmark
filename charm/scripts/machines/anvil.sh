@@ -75,6 +75,7 @@ FAST_PARTITION=shared
 FAST_MAX_NODES=1
 FAST_MAX_MINUTES=240
 BIG_PARTITION=wholenode
-# --exclusive: on shared, the whole node (all 128 cores in the job cgroup, so
-# +pemap can bind to any of them); redundant but harmless on wholenode.
-SBATCH_NODE_FLAGS="--exclusive --mem=0"
+# --exclusive: on shared, the whole node (all 128 cores and its memory in the
+# job cgroup, so +pemap can bind to any of them); redundant but harmless on
+# wholenode. Anvil rejects --mem=0 ("disabled on Anvil").
+SBATCH_NODE_FLAGS="--exclusive"
