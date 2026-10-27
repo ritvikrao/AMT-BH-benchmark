@@ -61,14 +61,14 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
       ([results](results/perf-1node-2026-10-21.txt)); verified across 1, 2 and 4
       Delta nodes ([results](results/correctness-2026-10-21.txt)). Open: leaf 1
       (0.556 vs HPX 0.322 at 64 cores), load imbalance at 64+ PEs.
-- [ ] **LB** Dynamic load balancing (branch `charm-lb`): `-lbperiod=k` migrates
+- [ ] **LB** Dynamic load balancing: `-lbperiod=k` migrates
       TreePieces between steps; `+balancer SfcLB` is ChaNGa's SFC cut. Generic
       balancers make the traversal up to 10x slower (they scatter a PE's
       TreePieces); SfcLB is 1.06x (8x15) and 1.10x (1x120) faster on 4M, one node, balanced
       after one pass: loads are measured from step 1 and resumed walks are
       charged to their TreePiece ([results](results/lb-1node-2026-10-26.txt)).
       Open: multi-node.
-- [x] **D** Decomposition rounds (branch `charm-decomp`): an unsplit histogram bin
+- [x] **D** Decomposition rounds: an unsplit histogram bin
       keeps its descriptor instead of a pass over every particle each round, and
       costs are summed only under `-balance=cost`. 4M, one node: 1.06x (8x15),
       1.03x (1x120); histogram 13 -> 7.5 ms per step ([results](results/decomp-1node-2026-10-27.txt)).
@@ -116,7 +116,7 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
 
 ## Resuming on a new machine
 
-1. Clone the fork, `git checkout charm-multinode`.
+1. Clone the fork, `git checkout charm-single-node` (or `main` once it is merged).
 2. Add or check `scripts/machines/<machine>.sh`. The Frontier file is a
    template; work through every `VERIFY` item there first. The Stampede3 file
    is tested on skx (2026-10-16). It reads the core layout from `numactl -H`
