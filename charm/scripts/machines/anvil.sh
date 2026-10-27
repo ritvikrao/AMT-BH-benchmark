@@ -32,6 +32,10 @@ ndev_for() {  # procs_per_node
   fi
 }
 
+# libreconverse links the hwloc module's libhwloc.so.5 (the only hwloc module
+# on Anvil, 1.11.13), which only the module puts on the library path.
+if command -v module >/dev/null 2>&1; then module load hwloc 2>/dev/null; fi
+
 # The Charm++ build that build.sh recorded, so a binary that carries no rpath
 # to the reconverse/LCI shared libraries still finds them.
 if [ -f "$(dirname "${BASH_SOURCE[0]}")/../../.build.env" ]; then
