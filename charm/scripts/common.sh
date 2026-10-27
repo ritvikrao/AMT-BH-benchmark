@@ -19,6 +19,7 @@ if [ -z "${MACHINE:-}" ]; then
     *delta*|dt-login*|cn[0-9]*) MACHINE=delta ;;
     *frontier*)                 MACHINE=frontier ;;
     *stampede3*)                MACHINE=stampede3 ;;
+    *anvil*)                    MACHINE=anvil ;;
     *) echo "common.sh: unknown host; set MACHINE (see scripts/machines/)" >&2
        return 1 2>/dev/null || exit 1 ;;
   esac
