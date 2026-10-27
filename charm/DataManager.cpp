@@ -48,6 +48,9 @@ DataManager::DataManager() :
   tpMaxParticles(0),
   firstSplitterRound(false),
   decompIterations(0),
+  reusingLeaves(false),
+  familiesMerged(0),
+  binsSplit(0),
   iteration(0),
   haveRanges(false),
   keyRanges(NULL),
@@ -430,13 +433,50 @@ void DataManager::initHistogramParticles(){
                          rootDepth,
                          myParticles.getVec(),
                          myNumParticles);
-  activeBins.addNewNode(sortingRoot);
+  // From the root, the refinement takes one round per level -- ~24 on the
+  // issue #7 input. But the particles move little in a step, so last step's
+  // leaves are nearly right: start from them, and receiveHistogram splits or
+  // merges only the bins that have drifted out of tolerance.
+  reusingLeaves = globalParams.reuseLeaves && !lastLeaves.empty();
+  if(reusingLeaves){
+    refineToLeaves(sortingRoot, 0, lastLeaves.size());
+    numTreePieces = lastLeaves.size();
+  }
+  else activeBins.addNewNode(sortingRoot);
 
   // don't access myParticles through ckvec after this
   // anyway. these must be reset before this DM starts
   // to receive submitted particles from TPs placed on it
   myNumParticles = 0;
   myParticles.length() = 0;
+}
+
+// Refine `node` down to the leaves lastLeaves[lo, hi), which lie under it in
+// key order and cover it, adding each leaf to the active bins as it is
+// reached. Purely local: every PE builds the same leaves over its own
+// particles.
+void DataManager::refineToLeaves(Node<NodeDescriptor> *node, int lo, int hi){
+  if(hi - lo == 1 && lastLeaves[lo] == node->getKey()){
+    activeBins.addNewNode(node);
+    return;
+  }
+  node->refine();
+  for(int c = 0; c < node->getNumChildren(); c++){
+    Node<NodeDescriptor> *child = node->getChild(c);
+    const int depth = child->getDepth();
+    int end = lo;
+    while(end < hi){
+      const Key k = lastLeaves[end];
+      const int shift =
+          (Node<NodeDescriptor>::getDepthFromKey(k) - depth)*LOG_BRANCH_FACTOR;
+      if(shift < 0 || (k >> shift) != child->getKey()) break;
+      end++;
+    }
+    CkAssert(end > lo);
+    refineToLeaves(child, lo, end);
+    lo = end;
+  }
+  CkAssert(lo == hi);
 }
 
 void DataManager::sendHistogram(){
@@ -499,6 +539,43 @@ void DataManager::receiveHistogram(CkReductionMsg *msg){
   // accuracy: bucket refinement in buildTree() is driven by particle count,
   // not by TreePiece boundaries.
   int overBudget = 0;
+
+  // Started from last step's leaves (-reuseleaves), the TreePiece budget is
+  // already spent, so a bin that has grown past the target can split only if
+  // a family of sibling leaves elsewhere merges back into its parent to make
+  // room. The lightest families go first, and only those whose parent stays
+  // under the target, so a merged bin never wants splitting again and the
+  // two never chase each other. A family is BRANCH_FACTOR consecutive bins
+  // whose keys are one parent's children -- every bin is a leaf.
+  vector<int> mergeStarts;
+  if(reusingLeaves){
+    const Real target = (Real)(DECOMP_TOLERANCE*globalParams.ppc);
+    int over = 0;
+    for(int i = 0; i < numRecvdBins; i++)
+      if(weight[i] > target &&
+         descriptors[i].smallestKey != descriptors[i].largestKey) over++;
+    const int short_ = numTreePieces + over*(BRANCH_FACTOR-1)
+                     - globalParams.numTreePieces;
+    if(short_ > 0){
+      vector<pair<double,int> > families;   // (weight, first bin)
+      for(int i = 0; i + BRANCH_FACTOR <= numRecvdBins; i++){
+        const Key k = descriptors[i].nodeKey;
+        if(k == Key(1) || k % BRANCH_FACTOR != 0) continue;
+        double w = 0.0;
+        int j = 0;
+        for(; j < BRANCH_FACTOR && descriptors[i+j].nodeKey == k+j; j++)
+          w += weight[i+j];
+        if(j == BRANCH_FACTOR && w <= target) families.push_back(make_pair(w,i));
+      }
+      const int want = (short_ + BRANCH_FACTOR-2)/(BRANCH_FACTOR-1);
+      const int take = (int)families.size() < want ? (int)families.size() : want;
+      partial_sort(families.begin(), families.begin()+take, families.end());
+      for(int m = 0; m < take; m++) mergeStarts.push_back(families[m].second);
+      sort(mergeStarts.begin(), mergeStarts.end());
+      numTreePieces -= take*(BRANCH_FACTOR-1);
+      familiesMerged += take;
+    }
+  }
 
   // A bin whose particles all share one Morton key cannot be split -- every
   // particle lands in the same child at every depth, forever. Splitting it
@@ -585,11 +662,16 @@ void DataManager::receiveHistogram(CkReductionMsg *msg){
   }
 
   int numBinsToRefine = binsToRefine.length();
+  const int numMerges = mergeStarts.size();
+  if(reusingLeaves) binsSplit += numBinsToRefine;
 
-  if(numBinsToRefine > 0){
-    SplitterMsg *m = new (numBinsToRefine,0) SplitterMsg;
+  if(numBinsToRefine > 0 || numMerges > 0){
+    SplitterMsg *m = new (numBinsToRefine,numMerges,0) SplitterMsg;
     memcpy(m->splitBins,binsToRefine.getVec(),sizeof(int)*numBinsToRefine);
     m->nSplitBins = numBinsToRefine; 
+    if(numMerges > 0)
+      memcpy(m->mergeBins,mergeStarts.data(),sizeof(int)*numMerges);
+    m->nMergeBins = numMerges;
     thisProxy.receiveSplitters(m);
     decompIterations++;
   }
@@ -624,9 +706,15 @@ void DataManager::receiveHistogram(CkReductionMsg *msg){
 
     // create tree pieces and send proxy
     #ifdef STATISTICS
-    CkPrintf("[0] decomp done after %d iterations used treepieces %d\n", decompIterations, numTreePieces);
+    if(reusingLeaves)
+      CkPrintf("[0] decomp done after %d iterations used treepieces %d, from last step's leaves: %d families merged, %d bins split\n",
+               decompIterations, numTreePieces, familiesMerged, binsSplit);
+    else
+      CkPrintf("[0] decomp done after %d iterations used treepieces %d\n", decompIterations, numTreePieces);
     #endif
     decompIterations = 0;
+    familiesMerged = 0;
+    binsSplit = 0;
     
     keyRanges = new Key[numTreePieces*2];
     tpCounts = new int[numTreePieces];
@@ -664,6 +752,14 @@ void DataManager::flushParticles(){
   // nothing and are sent nothing.
   flushDest = -1;
   flushRuns.clear();
+
+  // The leaves, in TreePiece order, are where next step's decomposition
+  // starts (-reuseleaves).
+  CkVec<pair<Node<NodeDescriptor>*,bool> > *leaves = activeBins.getActive();
+  lastLeaves.resize(leaves->length());
+  for(int i = 0; i < leaves->length(); i++)
+    lastLeaves[i] = (*leaves)[i].first->getKey();
+
   ParticleFlushWorker pfw(this);
   scaffoldTrav.preorderTraversal(sortingRoot,&pfw);
   emitFlushRun();
@@ -680,8 +776,9 @@ void DataManager::receiveSplitters(SplitterMsg *msg){
 
   int numRefineBins = msg->nSplitBins;
 
-  // process bins to refine
-  activeBins.processRefine(msg->splitBins,msg->nSplitBins);
+  // process bins to refine, and families to merge
+  activeBins.processRefine(msg->splitBins,msg->nSplitBins,
+                           msg->mergeBins,msg->nMergeBins);
 
   // We traverse the final tree to flush particles to 
   // appropriate tree pieces

@@ -60,6 +60,13 @@ struct Parameters {
   // default) never balances.
   int lbPeriod;
 
+  // -reuseleaves=1 (default): every step after the first starts its
+  // decomposition from the previous step's leaves, which the particles' small
+  // moves leave nearly right, instead of from the root -- one histogram round
+  // instead of ~24 (DataManager::receiveHistogram). 0 decomposes from scratch
+  // every step.
+  bool reuseLeaves;
+
   int iterations;
 
   // Bit per Phase; see Timers.h. 0 means no timing at all.
@@ -95,6 +102,7 @@ struct Parameters {
     p | cacheLineSize;
     p | balanceByCost;
     p | lbPeriod;
+    p | reuseLeaves;
     p | iterations;
     p | timerMask;
     p | dumpStep;

@@ -144,6 +144,10 @@ void Main::setParameters(CkArgMsg *m){
   globalParams.lbPeriod = params.getiparam("lbperiod", DEFAULT_LB_PERIOD, table);
   CkPrintf("lbperiod: %d\n", globalParams.lbPeriod);
 
+  globalParams.reuseLeaves =
+      params.getiparam("reuseleaves", DEFAULT_REUSE_LEAVES, table) != 0;
+  CkPrintf("reuseleaves: %d\n", (int)globalParams.reuseLeaves);
+
   it = table.find("timers");
   string timerSpec = (it == table.end()) ? string(DEFAULT_TIMERS) : it->second;
   string badPhase;
@@ -528,6 +532,7 @@ void Main::usage(){
   usage["chunkDepth"] = "when fetching remote data, what depth of subtree to fetch";
   usage["yield"] = "how many buckets to process before yielding processor";
   usage["lbperiod"] = "balance load (+balancer) after every Nth step; 0, the default, never";
+  usage["reuseleaves"] = "1 (default): start each step's decomposition from the last step's leaves; 0: from scratch";
   usage["output"] = "write ParaView snapshots with this path prefix, giving "
                     "<prefix>.pvd to open; omit for no output";
   usage["outputfreq"] = "write a snapshot every Nth step (default 1)";

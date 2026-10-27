@@ -91,6 +91,15 @@ class DataManager : public CBase_DataManager {
 
   Node<NodeDescriptor> *sortingRoot;
   int numTreePieces;
+
+  // -reuseleaves: the keys of last step's histogram leaves, in TreePiece
+  // order. Every PE has them, because every PE applied the same splits.
+  std::vector<Key> lastLeaves;
+  // This step's decomposition started from lastLeaves; and, on PE 0, how
+  // many leaf families it merged and bins it split to get back in tolerance.
+  bool reusingLeaves;
+  int familiesMerged;
+  int binsSplit;
   // Smallest and largest particle count over the TreePieces. Each histogram
   // leaf becomes one TreePiece, so these are the extremes of the final
   // histogram, known exactly on PE 0 and nowhere else. Reported once, in the
@@ -194,6 +203,7 @@ class DataManager : public CBase_DataManager {
 
   void hashParticleCoordinates(const OrientedBox<Real> &universe);
   void initHistogramParticles();
+  void refineToLeaves(Node<NodeDescriptor> *node, int lo, int hi);
   void sendHistogram();
   
   void senseTreePieces();

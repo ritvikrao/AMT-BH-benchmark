@@ -86,13 +86,32 @@ struct ActiveBinInfo{
   // way. The extra traffic is one 40-byte descriptor per leaf per round; the
   // extra work is none, since a carried leaf keeps last round's descriptor
   // (recomputing it was a pass over every local particle, every round).
-  void processRefine(int *binsToRefine, int numBinsToRefine){
+  //
+  // mergeStarts (in bin order) names the first of BRANCH_FACTOR sibling leaves
+  // to fold back into their parent, which takes their place as one leaf.
+  void processRefine(int *binsToRefine, int numBinsToRefine,
+                     const int *mergeStarts = NULL, int numMerges = 0){
     for(int i = 0; i < numBinsToRefine; i++){
       (*oldvec)[binsToRefine[i]].second = true;
     }
 
+    int nextMerge = 0;
     for(int i = 0; i < oldvec->length(); i++){
       Node<T> *node = (*oldvec)[i].first;
+
+      if(nextMerge < numMerges && mergeStarts[nextMerge] == i){
+        Node<T> *parent = node->getParent();
+        for(int j = 0; j < BRANCH_FACTOR; j++){
+          CkAssert((*oldvec)[i+j].first == parent->getChild(j));
+          CkAssert(!(*oldvec)[i+j].second);
+        }
+        delete[] parent->getChildren();
+        parent->setChildren(NULL, 0);
+        addNewNode(parent);
+        i += BRANCH_FACTOR-1;
+        nextMerge++;
+        continue;
+      }
 
       if(!(*oldvec)[i].second){
         if(keepUnrefined) carryNode(node, (*prevCounts)[i]);

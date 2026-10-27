@@ -8,6 +8,10 @@
 struct SplitterMsg : public CMessage_SplitterMsg {
   int *splitBins;
   int nSplitBins;
+  // The first bin of each family of sibling leaves to merge back into their
+  // parent (-reuseleaves), in bin order.
+  int *mergeBins;
+  int nMergeBins;
 };
 
 struct ParticleMsg : public CMessage_ParticleMsg {

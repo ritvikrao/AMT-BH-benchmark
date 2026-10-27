@@ -17,8 +17,14 @@ roughly equal particle count. The octree itself is pointer-based and built
 top-down from those key ranges, with remote nodes and particles fetched on
 demand through a per-PE software cache in `DataManager`.
 
-Because the key ranges are recomputed from scratch every step, the particle
-distribution is rebalanced at every iteration rather than drifting over time.
+The key ranges are recomputed every step, so the particle distribution is
+rebalanced at every iteration rather than drifting over time. After the first
+step the refinement starts from the previous step's leaves rather than from the
+root: the particles move little in a step, so it confirms them in one histogram
+round, splitting any leaf that has grown past the target and merging light
+sibling leaves to make room, instead of refining one level per round (~24
+rounds on the issue #7 input). `-reuseleaves=0` refines from the root every
+step; the forces are the same either way.
 
 Across processes and nodes, nothing is replicated. Particles move straight to
 the PE that owns their TreePiece. Each PE builds the tree only above its own
@@ -150,6 +156,8 @@ Options take the form `-<name>=<value>`:
 | `walkgroup` | most particles in a walk group: buckets that walk the tree together, each still tested at every node (1 = one bucket at a time) | 64 |
 | `walk` | `packet`: apply accepted nodes to the group's particles in SIMD lanes during the walk; `list`: gather per-bucket interaction lists and apply them afterwards; `auto`: `packet` for `b` up to 4, else `list`. Same interactions either way | `auto` |
 | `balance` | decomposition weight: `count` (particles) or `cost` (last step's interactions per particle) | `count` |
+| `reuseleaves` | `1`: start each step's decomposition from the last step's leaves; `0`: from the root | 1 |
+| `lbperiod` | migrate TreePieces every N steps (with `+balancer SfcLB`; see [Dynamic load balancing](#dynamic-load-balancing)) | 0 (never) |
 | `timers` | phases to time: `all`, `none`, or a comma-separated list | `all` |
 | `output` | path prefix for ParaView snapshots; open `<prefix>.pvd` | none (no output) |
 | `outputfreq` | write a snapshot every Nth step | 1 |
