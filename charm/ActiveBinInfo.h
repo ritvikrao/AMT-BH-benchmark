@@ -10,7 +10,10 @@ template<typename T>
 struct ActiveBinInfo{ 
   CkVec<std::pair<Node<T>*, bool> > *oldvec;
   CkVec<std::pair<Node<T>*, bool> > *newvec;
-  CkVec<NodeDescriptor> counts;
+  // This round's descriptors, one per entry of newvec; and last round's, one
+  // per entry of oldvec. Swapped like the two node vectors.
+  CkVec<NodeDescriptor> *counts;
+  CkVec<NodeDescriptor> *prevCounts;
   CkVec<Node<T>*> unrefined;
 
   // Carry leaves that were not refined this round into the next round's active
@@ -19,18 +22,22 @@ struct ActiveBinInfo{
   bool keepUnrefined;
 
   // Sum each bin's particle costs into its descriptor. The decomposition
-  // balances them; the local tree build has no use for them.
+  // balances them under -balance=cost; otherwise nothing reads them.
   bool sumCost;
 
   ActiveBinInfo(bool keep = false, bool cost = false) :
     keepUnrefined(keep), sumCost(cost) {
     oldvec = new CkVec<std::pair<Node<T> *, bool> >();
     newvec = new CkVec<std::pair<Node<T> *, bool> >();
+    counts = new CkVec<NodeDescriptor>();
+    prevCounts = new CkVec<NodeDescriptor>();
   }
 
   ~ActiveBinInfo(){
     delete oldvec;
     delete newvec;
+    delete counts;
+    delete prevCounts;
   }
 
   // XXX - add a function "postChildPush" which is empty
@@ -57,7 +64,14 @@ struct ActiveBinInfo{
     }else{
       kfirst = klast = Node<T>::getParticleLevelKey(node);
     }
-    counts.push_back(NodeDescriptor(np,node->getKey(),kfirst,klast,cost));
+    counts->push_back(NodeDescriptor(np,node->getKey(),kfirst,klast,cost));
+  }
+
+  // A leaf carried over unrefined has the same particles as last round, so
+  // its descriptor is last round's: no pass over its particles.
+  void carryNode(Node<T> *node, const NodeDescriptor &desc){
+    newvec->push_back(std::make_pair(node, false));
+    counts->push_back(desc);
   }
 
   // Refine the bins named, and -- when keepUnrefined is set -- carry every
@@ -69,7 +83,9 @@ struct ActiveBinInfo{
   // split. But a decision that has to weigh all the leaves against each other,
   // which is what spending the leftover TreePiece budget in
   // DataManager::receiveHistogram does, can only see a fraction of them that
-  // way. The extra traffic is one 32-byte descriptor per leaf per round.
+  // way. The extra traffic is one 40-byte descriptor per leaf per round; the
+  // extra work is none, since a carried leaf keeps last round's descriptor
+  // (recomputing it was a pass over every local particle, every round).
   void processRefine(int *binsToRefine, int numBinsToRefine){
     for(int i = 0; i < numBinsToRefine; i++){
       (*oldvec)[binsToRefine[i]].second = true;
@@ -79,7 +95,7 @@ struct ActiveBinInfo{
       Node<T> *node = (*oldvec)[i].first;
 
       if(!(*oldvec)[i].second){
-        if(keepUnrefined) addNewNode(node);
+        if(keepUnrefined) carryNode(node, (*prevCounts)[i]);
         continue;
       }
 
@@ -115,11 +131,11 @@ struct ActiveBinInfo{
   }
 
   int getNumCounts(){
-    return counts.length();
+    return counts->length();
   }
 
   NodeDescriptor *getCounts(){
-    return counts.getVec();
+    return counts->getVec();
   }
 
   void reset(){
@@ -130,7 +146,10 @@ struct ActiveBinInfo{
     newvec->length() = 0;
 
     unrefined.length() = 0;
-    counts.length() = 0;
+    CkVec<NodeDescriptor> *ctmp = prevCounts;
+    prevCounts = counts;
+    counts = ctmp;
+    counts->length() = 0;
   }
 
   CkVec<std::pair<Node<T>*, bool> > *getActive(){

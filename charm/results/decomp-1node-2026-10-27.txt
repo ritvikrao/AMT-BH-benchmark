@@ -1,0 +1,44 @@
+Decomposition histogram rounds, one Delta node (2026-10-27)
+============================================================
+
+Input: issue #7 4M (g3_4m.csv), leaf 10 (-b=10), theta 0.5, eps 1e-11,
+dt 0.0416667, 8 steps, -ppc 2000 (4016 TreePieces), BRANCH 2.
+Runtime: Charm++ recharm 9809d0a, Reconverse a8efcfc, LCI d366a405.
+old = barnes-sfclb2 (2ffafad), new = barnes-decomp1 (this change).
+Job 23253180 (cn137), old and new alternated, 2 reps; mean of steps 1-7.
+
+What changed
+------------
+Each step decomposes from scratch in ~24 histogram rounds (binary tree: one
+level per round), each a barrier: PE 0 picks bins to split, broadcasts,
+every PE refines and contributes, reduction back to PE 0. Every round, every
+PE re-added each unsplit bin and re-summed its particles' cost, a pass over
+all ~33k local particles, even under -balance=count where nothing reads the
+sum. Now an unsplit bin keeps last round's descriptor, and costs are summed
+only under -balance=cost. The decomposition itself is unchanged.
+
+Step times (ms per step; decomposition and treebuild are the slowest PE's)
+--------------------------------------------------------------------------
+layout  balancing      old: decomp tree  step     new: decomp tree  step   speedup
+8x15    none                36.3   14.5  130.2         28.6   14.8  122.7   1.06x
+8x15    SfcLB every 2       34.8   13.8  124.6         28.7   13.1  118.0   1.06x
+1x120   none                63.0   16.5  154.6         58.1   18.4  150.3   1.03x
+
+Energies: identical (md5 of the [ENERGY] lines) old vs new and 8x15 vs 1x120.
+Also 400k on 4 PEs, -balance=count and -balance=cost: identical.
+
+Traces (same job, 8x15 SfcLB every 2): per PE, receiveSplitters 7.0 -> 1.3
+ms per step; histogram rounds (first to last receiveHistogram on PE 0) 12.8-13.9
+-> 7.3-7.5 ms; first startTraversal 35.8-41.8 -> 30.5-33.2 ms into the step.
+Early rounds now take ~0.1 ms; the last ~6 rounds still take 0.5-1.3 ms each,
+waiting on the reduction of the whole frontier (up to 4016 x 40 B per PE).
+  /work/hdd/mzu/rao1/bh-multinode/traces/recharm-decomp1-2026-10-27/8x15-SfcLB-{old,new}
+
+Tried and dropped (job 23251953, traces job 23252279)
+-----------------------------------------------------
+Replacing the two particle quickSorts (decompose, after the exchange) with a
+(key, id, index) sort plus one gather, and a merge of the arriving runs:
+energies identical, but recvUnivBoundingBox went 3.4 -> 7.1 ms per PE and the
+exchange's receiveParticles did not change (8.6 vs 8.8 ms). The particles are
+already nearly in key order from the last step, so quickSort was cheap; the
+extra passes and a second 3.7 MB buffer per PE cost more than they saved.

@@ -40,7 +40,9 @@ void copyMomentsToNode(Node<ForceData> *node, const MomentsExchangeStruct &mes){
 }
 
 DataManager::DataManager() : 
-  activeBins(true,true),
+  // Costs are summed only when the decomposition balances by them: by count,
+  // the sum was a pass over every particle each round, read by no one.
+  activeBins(true,globalParams.balanceByCost),
   numTreePieces(1),
   tpMinParticles(0),
   tpMaxParticles(0),
