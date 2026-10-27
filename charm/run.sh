@@ -23,6 +23,8 @@
 #   EPS         Softening length, -eps.
 #   G           Gravitational constant, -G.
 #   TIMERS      Phases to time, -timers.             (default all)
+#   LB          Rebalance every LB steps with SfcLB (-lbperiod, +balancer
+#               SfcLB). Unset: no dynamic load balancing. See README.md.
 #   OUTPUT      ParaView snapshot prefix, -output.   (default: no output)
 #   OUTPUT_FREQ Write a snapshot every Nth step.
 #   LAUNCHER    Launcher command, used verbatim, e.g.
@@ -85,6 +87,7 @@ if [ -n "${THETA:-}" ]; then ARGS+=(-theta="$THETA"); fi
 if [ -n "${DT:-}" ];    then ARGS+=(-dtime="$DT");    fi
 if [ -n "${EPS:-}" ];   then ARGS+=(-eps="$EPS");     fi
 if [ -n "${G:-}" ];     then ARGS+=(-G="$G");         fi
+if [ -n "${LB:-}" ];    then ARGS+=(-lbperiod="$LB" +balancer SfcLB); fi
 if [ -n "${OUTPUT:-}" ]; then
     ARGS+=(-output="$OUTPUT")
     if [ -n "${OUTPUT_FREQ:-}" ]; then ARGS+=(-outputfreq="$OUTPUT_FREQ"); fi

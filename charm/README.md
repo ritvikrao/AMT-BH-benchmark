@@ -541,6 +541,25 @@ point gives one TreePiece holding all 2400, whichever way the cuts are made,
 and the balance line says so. An input where *every* body shares a key is
 rejected outright rather than run.
 
+### Dynamic load balancing
+
+`-lbperiod=k +balancer SfcLB` (or `LB=k ./run.sh ...`) migrates TreePieces
+between PEs every k steps by their measured load; the first time is after step
+1, since step 0's load includes reading the input. It is off by default. Results are identical with it on or off: the next step's
+particle exchange simply sends each TreePiece's particles to its new PE.
+
+`SfcLB` is ChaNGa's space-filling-curve balancer (MultistepLB_SFC): it cuts the
+TreePieces, in curve order, into one contiguous run per PE of near-equal load,
+so each PE still owns one compact region of space. The generic Charm++
+balancers (`GreedyRefineLB` and the like) place TreePieces one by one by load
+alone, scatter each PE's TreePieces across the volume, and made the traversal
+3-10x slower here.
+
+On one Delta node (4M bodies, leaf 10, 8 procs x 15 PEs) `LB=2` is 1.06x
+faster per step, and 1.10x on one process of 120 PEs; it balances in one pass.
+What it cannot reach is decomposition and the particle exchange, which are
+cut by particle count. See MULTINODE.md, "LB".
+
 ## Input formats
 
 Two are readable, selected with `-format=` or inferred from the file extension
