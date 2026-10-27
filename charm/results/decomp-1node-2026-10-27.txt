@@ -42,3 +42,36 @@ energies identical, but recvUnivBoundingBox went 3.4 -> 7.1 ms per PE and the
 exchange's receiveParticles did not change (8.6 vs 8.8 ms). The particles are
 already nearly in key order from the last step, so quickSort was cheap; the
 extra passes and a second 3.7 MB buffer per PE cost more than they saved.
+
+Fix 3: start each step from last step's leaves (-reuseleaves=1, default)
+=======================================================================
+
+Job 23255462 (cn137, the same node as job 23253180). old = barnes-decomp1
+(59bddb3: fix 1, from the root every step), new = barnes-reuse (1430dd3);
+alternated, 2 reps; mean of steps 1-7, ms per step.
+
+layout  balancing      old: decomp tree  step     new: decomp tree  step   speedup
+8x15    none                29.1   15.2  125.6         21.9   15.0  117.2   1.07x
+8x15    SfcLB every 2       28.7   13.8  117.4         22.3   15.0  110.8   1.06x
+1x120   none                58.0   17.2  149.8         25.5   16.5  116.3   1.29x
+
+Against 2ffafad (before fix 1, job 23253180 on the same node): 1.11x (8x15),
+1.13x (8x15 SfcLB), 1.33x (1x120). One process of 120 PEs gains most: its
+24 rounds cost twice what they did on 8 processes.
+
+Rounds: every step after step 0 confirmed last step's leaves in the one
+round, with no merges or splits; with -balance=cost, one step merged 2
+families and split 2 bins (2 extra rounds). Energies: identical (md5 of the
+[ENERGY] lines) across old and new, 8x15 and 1x120, with and without SfcLB,
+and -balance=cost with -reuseleaves=1 and 0. The forces do not depend on
+where TreePiece boundaries fall, so reusing the leaves changes nothing but
+the time.
+
+Trace (8x15 SfcLB every 2): one receiveHistogram per step; the first
+startTraversal at 24.2-24.4 ms into the step (fix 1 alone: 30.5-33.2 ms;
+neither: 35.8-41.8 ms).
+  /work/hdd/mzu/rao1/bh-multinode/traces/recharm-reuse-2026-10-27/8x15-SfcLB-new
+
+The merge/split path, forced on 400k with -ppc=1000 -balance=cost and 20x dt
+on 4 PEs: step 1 merged 13 families and split 13 bins in 2 rounds; energies
+identical to -reuseleaves=0.
