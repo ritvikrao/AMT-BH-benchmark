@@ -42,7 +42,6 @@ int MomentsWorker::work(Node<ForceData> *node){
       if(parent != NULL) parent->childMomentsReady();
     }
   }
-  nodeTable[node->getKey()] = node;
   return 1;
 }
 
