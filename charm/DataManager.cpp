@@ -519,16 +519,47 @@ void DataManager::refineToLeaves(Node<NodeDescriptor> *node, int lo, int hi){
 
 void DataManager::sendHistogram(){
 
+  // Only the bins this PE has particles in (see SparseBin); the empty ones
+  // are implied, and PE 0 fills them in.
+  const int numBins = activeBins.getNumCounts();
+  const NodeDescriptor *counts = activeBins.getCounts();
+  histogramContribution.clear();
+  for(int i = 0; i < numBins; i++){
+    if(counts[i].numParticles == 0) continue;
+    SparseBin e;
+    e.bin = i;
+    e.d = counts[i];
+    histogramContribution.push_back(e);
+  }
   CkCallback cb(CkIndex_DataManager::receiveHistogram(NULL),0,this->thisgroup);
-  contribute(sizeof(NodeDescriptor)*activeBins.getNumCounts(),activeBins.getCounts(),NodeDescriptorReductionType,cb);
+  contribute(sizeof(SparseBin)*histogramContribution.size(),
+             histogramContribution.empty() ? NULL : histogramContribution.data(),
+             NodeDescriptorReductionType,cb);
   activeBins.reset();
 }
 
 // executed on PE 0
 void DataManager::receiveHistogram(CkReductionMsg *msg){
 
-  int numRecvdBins = msg->getSize()/sizeof(NodeDescriptor);
-  NodeDescriptor *descriptors = (NodeDescriptor *)msg->getData();
+  CkVec<pair<Node<NodeDescriptor>*,bool> > *active = activeBins.getActive();
+  const int numRecvdBins = active->length();
+
+  // Expand to one descriptor per active bin; a bin nobody listed is empty
+  // everywhere (the descriptor ActiveBinInfo::addNewNode gives an empty node).
+  histogramDense.resize(numRecvdBins);
+  for(int i = 0; i < numRecvdBins; i++){
+    Node<NodeDescriptor> *nd = (*active)[i].first;
+    const Key plk = Node<NodeDescriptor>::getParticleLevelKey(nd);
+    histogramDense[i] = NodeDescriptor(0, nd->getKey(), plk, plk, 0.0);
+  }
+  const int numEntries = msg->getSize()/sizeof(SparseBin);
+  const SparseBin *entries = (const SparseBin *)msg->getData();
+  for(int k = 0; k < numEntries; k++){
+    CkAssert(entries[k].bin >= 0 && entries[k].bin < numRecvdBins);
+    CkAssert(entries[k].d.nodeKey == histogramDense[entries[k].bin].nodeKey);
+    histogramDense[entries[k].bin].grow(entries[k].d);
+  }
+  NodeDescriptor *descriptors = histogramDense.data();
 
   // XXX remove this and make a refine function for ActiveBinInfo
   CkVec<int> binsToRefine;
@@ -537,9 +568,6 @@ void DataManager::receiveHistogram(CkReductionMsg *msg){
   binsToRefine.length() = 0;
 
   int particlesHistogrammed = 0;
-
-  CkVec<pair<Node<NodeDescriptor>*,bool> > *active = activeBins.getActive();
-  CkAssert(numRecvdBins == active->length());
 
   // What a bin weighs. By count, its particles; by cost, its particles' summed
   // cost from the last traversal, scaled so that the whole histogram weighs
