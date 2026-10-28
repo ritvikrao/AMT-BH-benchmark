@@ -105,7 +105,6 @@ void TreePiece::startTraversal(){
   }
 
   remoteTraversalState.reset(this,numGroups,NULL);
-  remoteTraversalState.resetGroups(walkGroups.data(),numGroups);
   remoteTraversalWorker.reset(this,&remoteTraversalState);
   RescheduleMsg *msg = new (NUM_PRIORITY_BITS) RescheduleMsg;
   *(int *)CkPriorityPtr(msg) = REMOTE_GRAVITY_PRIORITY;
@@ -113,7 +112,6 @@ void TreePiece::startTraversal(){
   thisProxy[thisIndex].doRemoteGravity(msg);
 
   localTraversalState.reset(this,numGroups,NULL);
-  localTraversalState.resetGroups(walkGroups.data(),numGroups);
   localTraversalWorker.reset(this,&localTraversalState);
   if(globalParams.steal) stealPublish(this,numGroups);
 
@@ -183,7 +181,6 @@ void TreePiece::doRemoteGravity(RescheduleMsg *msg){
     remoteTraversalWorker.setContext(WalkContext(&g,allBuckets(g)));
     trav.gravityWalk(root,&remoteTraversalWorker,&remoteTraversalState,allBuckets(g));
     remoteTraversalWorker.endWalk();
-    remoteTraversalState.groupWalkedByOwner(remoteTraversalState.current);
     remoteTraversalState.current++;
     buckets += g.numBuckets;
     i++;
@@ -202,14 +199,32 @@ void TreePiece::localGravityDone(){
   traversalDone();
 }
 
-void TreePiece::stolenLocalDone(int n, CmiUInt8 pn, CmiUInt8 pp, CmiUInt8 oc){
+// Add what another PE's walk of group g gathered into the group's particles:
+// this PE is the only writer of its particles, so no lock, whatever the
+// state of the group's remote walk.
+void TreePiece::stolenLocalDone(int g, int n, double *sums, CmiUInt8 pn, CmiUInt8 pp, CmiUInt8 oc){
+  const WalkGroup &grp = walkGroups[g];
+  int k = 0;
+  for(int b = 0; b < grp.numBuckets; b++){
+    Particle *p = grp.buckets[b]->getParticles();
+    const int np = grp.buckets[b]->getNumParticles();
+    for(int i = 0; i < np; i++, k++){
+      const double *s = sums + 5*k;
+      p[i].acceleration.x += s[0];
+      p[i].acceleration.y += s[1];
+      p[i].acceleration.z += s[2];
+      p[i].potential += s[3];
+      p[i].cost += s[4];
+    }
+  }
+  CkAssert(k == n);
 #ifdef STATISTICS
   localTraversalState.numInteractions[0] += pn;
   localTraversalState.numInteractions[1] += pp;
   localTraversalState.numInteractions[2] += oc;
 #endif
-  stealStats.lost += n;
-  if(localTraversalState.decrPending(n)) localGravityDone();
+  stealStats.lost++;
+  if(localTraversalState.decrPending(1)) localGravityDone();
 }
 
 void TreePiece::remoteGravityDone(){ 

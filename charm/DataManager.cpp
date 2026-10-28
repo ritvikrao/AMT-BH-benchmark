@@ -1557,6 +1557,8 @@ void DataManager::finishIteration(){
   findMinVByA(dtred);
   dtred.stealPublished = stealStats.published;
   dtred.stealTaken = stealStats.taken;
+  dtred.stealAttempts = stealStats.attempts;
+  dtred.stealEmpty = stealStats.empty;
   stealStats.reset();
 
 #ifdef STATISTICS
@@ -1614,9 +1616,10 @@ void DataManager::advance(CkReductionMsg *msg){
     CkPrintf("[STATS] node inter %lu part inter %lu open crit %lu dt %f\n", dtred->pnInteractions, dtred->ppInteractions, dtred->openCrit, globalParams.dtime);
 #endif
     if(globalParams.steal)
-      CkPrintf("[STEAL] step %d: %lu of %lu local walks done by another PE (%.1f%%)\n",
+      CkPrintf("[STEAL] step %d: %lu of %lu local walks done by another PE (%.1f%%); idle attempts %lu, of which empty-handed %lu\n",
                iteration, (unsigned long)dtred->stealTaken, (unsigned long)dtred->stealPublished,
-               dtred->stealPublished ? 100.0*dtred->stealTaken/dtred->stealPublished : 0.0);
+               dtred->stealPublished ? 100.0*dtred->stealTaken/dtred->stealPublished : 0.0,
+               (unsigned long)dtred->stealAttempts, (unsigned long)dtred->stealEmpty);
   }
 
   CkAssert(pendingMoments.empty());

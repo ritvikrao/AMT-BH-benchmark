@@ -25,7 +25,6 @@ void Request::deliverParticles(int num){
     worker->applyParticles(externalParticles,num,req.context.mask);
     worker->endWalk();
     State *state = req.state;
-    state->groupRequestDone(state->groupIndex(req.context.group));
     if(state->decrPending()){
       worker->done();
     }
@@ -52,7 +51,6 @@ void Request::deliverNode(){
       traversal->gravityWalk(firstChild+j,worker,state,req.context.mask);
     }
     worker->endWalk();
-    state->groupRequestDone(state->groupIndex(req.context.group));
     if(state->decrPending()){
       worker->done();
     }

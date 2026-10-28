@@ -9,6 +9,8 @@
 #include <vector>
 #include <deque>
 #include <atomic>
+#include "gravity.h"
+#include "Packet.h"
 
 extern CProxy_TreePiece treePieceProxy;
 extern Parameters globalParams;
@@ -41,6 +43,10 @@ thread_local unsigned rng = 0;
 thread_local LocalTraversalWorker thiefWorker;
 thread_local State thiefState;
 thread_local Traversal<ForceData> thiefTraversal;
+// The thief's copy of the group's particles (positions and masses read, sums
+// written), and the sums as sent back: ax, ay, az, phi, cost per particle.
+thread_local std::vector<Particle> scratch;
+thread_local std::vector<double> sums;
 
 inline unsigned nextRand(){
   rng = rng * 1664525u + 1013904223u;
@@ -50,12 +56,47 @@ inline unsigned nextRand(){
 void runStolen(TreePiece *tp, int g){
   const WalkGroup &group = tp->getGroup(g);
   const uint64_t all = allBuckets(group);
+  // Private copy of the group's particles, sums cleared.
+  int n = 0;
+  for(int b = 0; b < group.numBuckets; b++) n += group.buckets[b]->getNumParticles();
+  scratch.resize(n);
+  int k = 0;
+  for(int b = 0; b < group.numBuckets; b++){
+    const Particle *p = group.buckets[b]->getParticles();
+    const int np = group.buckets[b]->getNumParticles();
+    for(int i = 0; i < np; i++, k++){
+      scratch[k] = p[i];
+      scratch[k].acceleration = Vector3D<Real>(0.0, 0.0, 0.0);
+      scratch[k].potential = 0.0;
+      scratch[k].cost = 0.0;
+    }
+  }
   thiefState.reset(tp, 1, NULL);
   thiefState.finishedIteration();
   thiefWorker.reset(tp, &thiefState);
   thiefWorker.setContext(WalkContext(&group, all));
+  // Point the kernels' targets at the copy instead of the owner's particles.
+  k = 0;
+  for(int b = 0; b < group.numBuckets; b++){
+    const int np = group.buckets[b]->getNumParticles();
+    if(group.packet){
+      for(int i = 0; i < np; i++) packet.particle[k + i] = &scratch[k + i];
+    }
+    else{
+      sources.target[b] = &scratch[k];
+    }
+    k += np;
+  }
   thiefTraversal.gravityWalk(tp->getRoot(), &thiefWorker, &thiefState, all);
   thiefWorker.endWalk();
+  sums.resize(5*n);
+  for(int i = 0; i < n; i++){
+    sums[5*i+0] = scratch[i].acceleration.x;
+    sums[5*i+1] = scratch[i].acceleration.y;
+    sums[5*i+2] = scratch[i].acceleration.z;
+    sums[5*i+3] = scratch[i].potential;
+    sums[5*i+4] = scratch[i].cost;
+  }
   stealStats.taken++;
   CmiUInt8 pn = 0, pp = 0, oc = 0;
 #ifdef STATISTICS
@@ -63,13 +104,14 @@ void runStolen(TreePiece *tp, int g){
   pp = thiefState.numInteractions[1];
   oc = thiefState.numInteractions[2];
 #endif
-  treePieceProxy[tp->getIndex()].stolenLocalDone(1, pn, pp, oc);
+  treePieceProxy[tp->getIndex()].stolenLocalDone(g, n, sums.data(), pn, pp, oc);
 }
 
-// Idle callback: take one quiet local walk from a TreePiece of another PE of
-// this process, oldest first (the front: its remote walk started earliest).
+// Idle callback: take one local walk from a TreePiece of another PE of this
+// process, from the front of its queue (the owner takes from the back).
 void stealIdle(void *){
   if(table == NULL || table->queued.load(std::memory_order_relaxed) == 0) return;
+  stealStats.attempts++;
   const int me = CmiMyRank();
   const int n = table->ranks;
   const int start = nextRand() % n;
@@ -84,7 +126,6 @@ void stealIdle(void *){
       std::deque<int> &q = tp->stealQueue();
       if(q.empty()) continue;
       const int g = q.front();
-      if(!tp->groupQuiet(g)) continue;
       q.pop_front();
       if(q.empty()){
         pq.pieces[i] = pq.pieces.back();
@@ -96,6 +137,7 @@ void stealIdle(void *){
       return;
     }
   }
+  stealStats.empty++;
 }
 
 } // namespace

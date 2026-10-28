@@ -69,15 +69,14 @@ class TreePiece : public CBase_TreePiece {
 
   void localGravityDone();
   void remoteGravityDone();
-  // A PE of this process did n of this TreePiece's local walks (Steal.h).
-  void stolenLocalDone(int n, CmiUInt8 pn, CmiUInt8 pp, CmiUInt8 oc);
+  // A PE of this process did group g's local walk (Steal.h): its sums for
+  // the group's n particles, five per particle, and its interaction counts.
+  void stolenLocalDone(int g, int n, double *sums, CmiUInt8 pn, CmiUInt8 pp, CmiUInt8 oc);
 
-  // For stolen walks: the owner's tree, its groups, and whether a group's
-  // remote walk is quiet.
+  // For stolen walks: the owner's tree and its groups.
   Node<ForceData> *getRoot() const { return root; }
   const WalkGroup &getGroup(int g) const { return walkGroups[g]; }
   std::deque<int> &stealQueue() { return localQueue; }
-  bool groupQuiet(int g) const { return remoteTraversalState.groupQuiet(g); }
   void requestMoments(Key k, int replyTo);
 
   void quiescence();

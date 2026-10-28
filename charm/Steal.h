@@ -10,19 +10,20 @@
 // PE's own subtree -- built in the tree-build phase and never written during
 // the traversal -- and issues no fetches. The local walks are what another PE
 // of the same process can do in the owner's place: it walks the owner's tree
-// through shared memory with its own interaction lists, and writes the group's
-// particles directly, because by then nobody else writes them. The force
-// kernels are the only writers of acceleration, potential and cost before
-// integration, and a group's local walk is handed out only once its remote
-// walk is quiet: the owner's pass over it is done and no request of its is in
-// flight (State::groupQuiet). So no lock guards the particles; one message
-// to the owner reports the group done.
+// through shared memory with its own interaction lists, and sums into a
+// private copy of the group's particles. One message carries the sums back,
+// and the owner adds them in (TreePiece::stolenLocalDone). So the owner stays
+// the only writer of its particles, no lock guards them, and a local walk can
+// be taken at any time -- the group's remote walk may still be running on
+// the owner. (Letting the thief write the particles directly would need the
+// remote walk to be finished first, and measured on Delta that condition
+// starved the thieves: 90% of idle attempts found no such group.)
 //
 // Each TreePiece keeps a deque of the local walks not yet started. The owner
 // takes from the back, in doLocalGravity as before; an idle PE of the same
-// process (Converse's PROCESSOR_IDLE conditions) takes a quiet group from the
-// front of some TreePiece of another PE. One lock per PE covers the deques of
-// its TreePieces and the list of those that still have work. Stealing stays
+// process (Converse's PROCESSOR_IDLE conditions) takes from the front of some
+// TreePiece of another PE. One lock per PE covers the deques of its
+// TreePieces and the list of those that still have work. Stealing stays
 // inside the process: the owner's tree is only addressable there.
 
 #include "charm++.h"
@@ -34,8 +35,11 @@ struct StealStats {
   CmiUInt8 published;   // local walks this PE's TreePieces offered
   CmiUInt8 taken;       // walks this PE did for TreePieces of other PEs
   CmiUInt8 lost;        // walks of this PE's TreePieces done elsewhere
-  StealStats() : published(0), taken(0), lost(0) {}
-  void reset(){ published = taken = lost = 0; }
+  // Idle callbacks that saw work queued in the process, and those among
+  // them that took nothing (the queues emptied or were locked).
+  CmiUInt8 attempts, empty;
+  StealStats() : published(0), taken(0), lost(0), attempts(0), empty(0) {}
+  void reset(){ published = taken = lost = attempts = empty = 0; }
 };
 extern thread_local StealStats stealStats;
 
