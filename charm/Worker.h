@@ -54,7 +54,6 @@ class MomentsWorker : public CutoffWorker<ForceData> {
   // is a dummy value, and is equal to the number of
   // useful treepieces+1
   CkVec<TreePieceDescriptor> &peTreePieces;
-  map<Key,Node<ForceData>*> &nodeTable;
   CkVec<Node<ForceData>*> &buckets;
   // This step's particle count per TreePiece, from the decomposition: which
   // owners can answer for a node (servingOwner).
@@ -69,13 +68,11 @@ class MomentsWorker : public CutoffWorker<ForceData> {
 
   public:
   MomentsWorker(CkVec<TreePieceDescriptor> &petps,
-                map<Key,Node<ForceData>*> &tab,
                 CkVec<Node<ForceData>*> &bucks,
                 const int *counts,
                 CkVec<Node<ForceData>*> &empties
                 ) :
     peTreePieces(petps),
-    nodeTable(tab),
     buckets(bucks),
     tpCounts(counts),
     emptyRemoteLeaves(empties),

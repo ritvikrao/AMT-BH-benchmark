@@ -169,7 +169,6 @@ class DataManager : public CBase_DataManager {
   // from particles present on this PE
   bool doneTreeBuild;
   //CkVec<RequestedMomentsDescriptor> requestedMoments;
-  map<Key,Node<ForceData>*> nodeTable;
 
   map<Key,CkVec<int> > pendingMoments;
 
