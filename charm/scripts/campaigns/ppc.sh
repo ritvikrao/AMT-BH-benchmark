@@ -1,6 +1,7 @@
 # TreePiece granularity under stealing and SfcLB: -ppc 1000/2000/4000 (67, 33,
 # 17 TreePieces per PE at 4M on 120 PEs) x -steal 0/1 x -lbperiod 0/2, on 2x60
-# and 8x15, STEPS steps (default 8), two repetitions alternating. Sourced by job.sh:
+# and 8x15, STEPS steps (default 8), two repetitions alternating. PPCS and LBS
+# override the lists. Sourced by job.sh:
 #   BIN=$BH_WORK/bin/barnes-<commit>-recharm scripts/submit.sh 1 45 ppc [N] [STEPS]
 N=${1:-4000000}
 STEPS=${2:-8}
@@ -9,8 +10,8 @@ BT=$(basename "$BIN"); BT=${BT#barnes-}; BT=${BT%-recharm}
 PHYS="-G=1.488185170503113e-34 -dtime=0.0416667 -eps=1e-11"
 for rep in 1 2; do
   for procs in 2 8; do
-    for ppc in 1000 2000 4000; do
-      for lb in 0 2; do
+    for ppc in ${PPCS:-1000 2000 4000}; do
+      for lb in ${LBS:-0 2}; do
         for st in 0 1; do
           lbargs=""; [ "$lb" -gt 0 ] && lbargs="-lbperiod=$lb +balancer SfcLB"
           TUNE="-ppc=$ppc" run_one "${BT}-ppc${ppc}lb${lb}steal${st}" "$N" 1 "$procs" $((PES / procs)) "$rep" "$STEPS" -theta=0.5 -b=10 -steal=$st $lbargs
