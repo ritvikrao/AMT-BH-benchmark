@@ -34,8 +34,16 @@ openCriterionBucket(Node<ForceData> *node,
 // doRemoteGravity) and after each walk resumed by a fetch (Request) -- so the
 // lists are empty between entry methods, and DataManager::finishIteration
 // flushes once more before the PE reads the forces.
+// List capacity. The four arrays of a slot are CAP doubles each, so a group of
+// 32 buckets holds 32 x 4 x CAP x 8 bytes of lists, 128 KB at CAP 128 -- four
+// times L1 -- and an append touches a line in each of the four arrays. A
+// smaller CAP keeps the lists nearer the core and flushes more often, with a
+// kernel of CAP sources per flush; -DSOURCE_CAP=n sets it (a multiple of 8).
+#ifndef SOURCE_CAP
+#define SOURCE_CAP 128
+#endif
 struct SourceLists {
-  static const int CAP = 128;
+  static const int CAP = SOURCE_CAP;
   // Per slot: how many sources wait, and the bucket they are for. Kept apart
   // from the coordinates so that an append reads one cache line.
   alignas(64) int n[WALK_GROUP_MAX_BUCKETS];
