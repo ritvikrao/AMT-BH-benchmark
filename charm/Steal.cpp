@@ -1,5 +1,6 @@
 #include "Steal.h"
 #include "TreePiece.h"
+#include "DataManager.h"
 #include "Parameters.h"
 #include "Worker.h"
 #include "State.h"
@@ -14,6 +15,7 @@
 #include "Timers.h"
 
 extern CProxy_TreePiece treePieceProxy;
+extern CProxy_DataManager dataManagerProxy;
 extern Parameters globalParams;
 
 thread_local StealStats stealStats;
@@ -42,10 +44,6 @@ thread_local bool registered = false;
 thread_local unsigned rng = 0;
 thread_local bool heavyPe = false;
 thread_local int remoteOpen = 0;
-// Projections user events: the idle callback is outside any entry method, so
-// without these a trace shows the walks done there as idle time.
-const int EV_STOLEN_WALK = 7001;
-const int EV_OWN_IDLE_WALK = 7002;
 
 // The thief's walk state. Thread-local, like the interaction lists it binds
 // (gravity.h): a stolen walk is one PE's work from start to end.
@@ -62,9 +60,10 @@ inline unsigned nextRand(){
   return rng >> 8;
 }
 
-void runStolen(TreePiece *tp, int g){
+} // namespace
+
+void stealRunStolen(TreePiece *tp, int g){
   PE_DIAG_TIME(busyLocal);
-  const double t0 = CkWallTimer();
   const WalkGroup &group = tp->getGroup(g);
   const uint64_t all = allBuckets(group);
   // Private copy of the group's particles, sums cleared.
@@ -116,8 +115,11 @@ void runStolen(TreePiece *tp, int g){
   oc = thiefState.numInteractions[2];
 #endif
   treePieceProxy[tp->getIndex()].stolenLocalDone(g, n, sums.data(), pn, pp, oc);
-  traceUserBracketEvent(EV_STOLEN_WALK, t0, CkWallTimer());
 }
+
+namespace {
+
+inline CmiUInt8 handle(TreePiece *tp){ return (CmiUInt8)(uintptr_t)tp; }
 
 // Idle callback: one local walk. This PE's own first (from the back, done in
 // place), else one from the front of a TreePiece of another PE.
@@ -139,9 +141,9 @@ void stealIdle(void *){
       if(q.empty()) pq.pieces.pop_back();
       table->queued.fetch_sub(1, std::memory_order_relaxed);
       lk.unlock();
-      const double t0 = CkWallTimer();
-      tp->doOwnLocalGroup(g);
-      traceUserBracketEvent(EV_OWN_IDLE_WALK, t0, CkWallTimer());
+      // Through an inline entry method of this PE's DataManager, so that the
+      // walk is traced: the idle callback itself is outside any entry method.
+      dataManagerProxy[CkMyPe()].ownIdleWalk(handle(tp), g);
       return;
     }
   }
@@ -168,7 +170,7 @@ void stealIdle(void *){
       }
       table->queued.fetch_sub(1, std::memory_order_relaxed);
       lk.unlock();
-      runStolen(tp, g);
+      dataManagerProxy[CkMyPe()].stolenWalk(handle(tp), g);
       return;
     }
   }
@@ -195,8 +197,6 @@ void stealInit(){
   });
   if(registered) return;
   registered = true;
-  traceRegisterUserEvent("stolen local walk", EV_STOLEN_WALK);
-  traceRegisterUserEvent("own local walk (idle)", EV_OWN_IDLE_WALK);
   rng = (unsigned)CkMyPe() * 2654435761u + 12345u;
   if(CmiMyNodeSize() > 1){
     CcdCallOnConditionKeep(CcdPROCESSOR_BEGIN_IDLE, stealIdle, NULL);

@@ -67,6 +67,11 @@ mainmodule barnes {
   };
 
   group DataManager {
+    // Work stealing (Steal.h): the walks done from the idle callback go
+    // through these so that Projections traces them as entry methods.
+    // Inline: the target is this PE's own branch, so they run in place.
+    entry [inline] void stolenWalk(CmiUInt8 treePiece, int g);
+    entry [inline] void ownIdleWalk(CmiUInt8 treePiece, int g);
     entry DataManager();
     entry void loadParticles(CkCallback &cb);
     entry void receiveCsvCounts(CkReductionMsg *msg);

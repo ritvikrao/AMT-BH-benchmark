@@ -63,6 +63,9 @@ void stealSetHeavy(bool heavy);
 void stealRemoteOpened();
 void stealRemoteClosed();
 
+// The thief's walk of group g of tp (DataManager::stolenWalk).
+void stealRunStolen(TreePiece *tp, int g);
+
 // Once per PE, before the first traversal: the process-wide table and this
 // PE's idle callbacks.
 void stealInit();

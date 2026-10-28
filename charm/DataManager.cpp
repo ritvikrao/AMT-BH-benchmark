@@ -1252,6 +1252,14 @@ bool CompareNodePtrToKey(void *a, Key k){
   return (Node<ForceData>::getParticleLevelKey(node) >= k);
 }
 
+void DataManager::stolenWalk(CmiUInt8 treePiece, int group){
+  stealRunStolen((TreePiece *)(uintptr_t)treePiece, group);
+}
+
+void DataManager::ownIdleWalk(CmiUInt8 treePiece, int group){
+  ((TreePiece *)(uintptr_t)treePiece)->doOwnLocalGroup(group);
+}
+
 void DataManager::startTraversal(){
   if(globalParams.steal) stealInit();
   // grav() counts this step's interactions into each particle's cost, which

@@ -237,6 +237,10 @@ class DataManager : public CBase_DataManager {
   void findMinVByA(DtReductionStruct &);
 #ifdef PE_DIAG
   void reportPeDiag();
+  // Steal.h: a local walk of another PE's TreePiece, and one of this PE's own,
+  // run from the idle callback through an inline entry method.
+  void stolenWalk(CmiUInt8 treePiece, int group);
+  void ownIdleWalk(CmiUInt8 treePiece, int group);
 #endif
 
   void markNaNBuckets();
