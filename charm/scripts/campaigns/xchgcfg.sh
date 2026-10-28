@@ -23,11 +23,14 @@ TUNE=""
 tag_of() { local b; b=$(basename "$1"); echo "${b#barnes-}"; }
 echo "=== cores $(core_map "$PES"); binaries $BINS; layouts $CFGS"
 for rep in $(seq 1 "$REPS"); do
-  echo "$CFGS" | tr ';' '\n' | while read -r cfg; do
+  # A for loop, not a while-read pipe: srun inside run_one reads the loop's
+  # stdin and would swallow the remaining layouts.
+  IFS=';' read -r -a cfglist <<< "$CFGS"
+  for cfg in "${cfglist[@]}"; do
     [ -n "$cfg" ] || continue
     set -- $cfg
     for b in $BINS; do
-      BIN=$b run_one "$(tag_of "$b")-xchg_ppc$3" "$N" 1 "$1" "$2" "$rep" "$STEPS" -theta=0.5 -b=10 -ppc=$3 -steal=1
+      BIN=$b run_one "$(tag_of "$b")-xchg_ppc$3" "$N" 1 "$1" "$2" "$rep" "$STEPS" -theta=0.5 -b=10 -ppc=$3 -steal=1 </dev/null
     done
   done
 done
