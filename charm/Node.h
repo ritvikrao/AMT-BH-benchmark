@@ -28,12 +28,10 @@ extern string NodeTypeString[];
 
 struct NodeCore {
   Key key;
-  NodeType type;
 
   int depth;
   Particle *particleStart;
   int numParticles;
-  int numChildren;
 
   // tps [ownerStart,ownerEnd] own this node
   int ownerStart;
@@ -44,8 +42,6 @@ struct NodeCore {
   NodeCore(){
     particleStart = NULL;
     numParticles = 0;
-    numChildren = 0;
-    type = Invalid;
     depth = -1;
     ownerStart = -1;
     ownerEnd = -1;
@@ -55,32 +51,46 @@ struct NodeCore {
   NodeCore(Key k, int d, Particle *p, int np) : 
     key(k), depth(d), 
     particleStart(p), numParticles(np),
-    type(Invalid), numChildren(0),
     ownerStart(-1), ownerEnd(-1), cached(false)
   {
   }
 };
 
+// Layout: what the gravity walk reads of a node it visits -- its type, the
+// moments (in data, first), and if it opens the node, the children pointer and
+// count -- comes first and fits in 64 bytes; the node is aligned to 64, so a
+// visit touches one cache line. Everything the walk does not read (key,
+// depth, particles, owners, the bounding box, the parent) follows. Before this
+// the type was in the first line and the moments in the second or third, at
+// some 360M visits per step.
 template<typename T>
-class Node {
+class alignas(64) Node {
 
-  NodeCore core;
+  NodeType type;
+  int numChildren;
   // all children are stored together
   Node<T> *children;
+
+  public:
+  T data;
+
+  private:
+  NodeCore core;
   Node<T> *parent;
 
   int numChildrenMomentsReady;
 
   public:
-  T data;
   Node(Key k, int d, Particle *p, int np, Node<T> *par=NULL) : 
-    core(k,d,p,np), parent(par), children(NULL), data(),
+    type(Invalid), numChildren(0), children(NULL), data(),
+    core(k,d,p,np), parent(par),
    numChildrenMomentsReady(0)
   {
   }
 
   Node() : 
-    core(), parent(NULL), children(NULL), data(),
+    type(Invalid), numChildren(0), children(NULL), data(),
+    core(), parent(NULL),
    numChildrenMomentsReady(0)
   {
   }
@@ -110,12 +120,12 @@ class Node {
   }
 
   int getNumChildren() const {
-    return core.numChildren;
+    return numChildren;
   }
 
   void setChildren(Node<T> *ch, int n) {
     children = ch;
-    core.numChildren = n;
+    numChildren = n;
   }
 
   Node<T> *getChildren() const { return children; }
@@ -126,11 +136,11 @@ class Node {
   int getDepth() const { return core.depth; }
   int getOwnerStart() const { return core.ownerStart; }
   int getOwnerEnd() const { return core.ownerEnd; }
-  NodeType getType() const { return core.type; }
+  NodeType getType() const { return type; }
   Node<T> *getParent() const { return parent; }
   void setKey(Key &k){ core.key = k; }
   void setDepth(int d){ core.depth = d; }
-  void setType(NodeType t){ core.type = t; }
+  void setType(NodeType t){ type = t; }
   void setParent(Node<T> *par){ parent = par; }
 
   void setOwners(int lb, int ub){
@@ -148,11 +158,10 @@ class Node {
 
   void childMomentsReady(){ numChildrenMomentsReady++; }
   int getNumChildrenMomentsReady() const { return numChildrenMomentsReady; }
-  bool allChildrenMomentsReady() const { return numChildrenMomentsReady == core.numChildren; }
+  bool allChildrenMomentsReady() const { return numChildrenMomentsReady == numChildren; }
 
   void getOwnershipFromChildren(){
     // set node type from children types
-    int numChildren = core.numChildren;
     bool allChildrenExternal = true;
     // A child that no tree piece owns carries a sentinel owner range rather
     // than a real one (OwnershipActiveBinInfo::refine writes -69/-171 when a
@@ -199,24 +208,24 @@ class Node {
   }
 
   void fullyDelete(){
-    if(core.numChildren == 0){
+    if(numChildren == 0){
       delete this;
       return;
     }
 
-    for(int i = 0; i < core.numChildren; i++){
+    for(int i = 0; i < numChildren; i++){
       children[i].fullyDelete();
     }
   }
 
   void refine(){
-    CkAssert(core.numChildren == 0);
+    CkAssert(numChildren == 0);
     int numRankBits = LOG_BRANCH_FACTOR;
     int depth = getDepth();
     CkAssert(depth >= 0);
     CkAssert(depth < ((TREE_KEY_BITS-1)/numRankBits));
 
-    core.numChildren = BRANCH_FACTOR;
+    numChildren = BRANCH_FACTOR;
     children = new Node<T>[BRANCH_FACTOR];
 
     Key myKey = getKey();
@@ -252,7 +261,7 @@ class Node {
     // different children
     child->core.particleStart = core.particleStart+childPartStart;
     child->core.numParticles = childNumParticles;
-    child->core.numChildren = 0;
+    child->numChildren = 0;
   }
 
   void printBoundingBox(ostream &os){

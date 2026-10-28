@@ -205,8 +205,9 @@ inline int servingOwner(int ownerStart, int ownerEnd, const int *tpCounts, Key k
 }
 
 struct ForceData {
-  OrientedBox<Real> box;
+  // Moments first: they are what the walk reads (see Node's layout note).
   MultipoleMoments moments;
+  OrientedBox<Real> box;
 
   ForceData() 
   {
