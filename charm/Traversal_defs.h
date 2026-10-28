@@ -125,6 +125,7 @@ void Traversal<T>::gravityLeaf(Node<T> *leaf, TraversalWorker *worker, State *st
     int np = leaf->getNumParticles();
     if(particles == NULL){
       state->incrPending();
+      state->groupRequestIssued(state->groupIndex(here.group));
       dm->requestParticles(leaf,worker,state,this,here);
       return;
     }
@@ -132,6 +133,7 @@ void Traversal<T>::gravityLeaf(Node<T> *leaf, TraversalWorker *worker, State *st
   }
   else if(type == Remote){
     state->incrPending();
+    state->groupRequestIssued(state->groupIndex(here.group));
     dm->requestNode(leaf,worker,state,this,here);
   }
 }

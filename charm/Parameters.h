@@ -67,6 +67,9 @@ struct Parameters {
   // every step.
   bool reuseLeaves;
 
+  // -steal=1: idle PEs of a process do other PEs' local walks (Steal.h).
+  bool steal;
+
   int iterations;
 
   // Bit per Phase; see Timers.h. 0 means no timing at all.
@@ -103,6 +106,7 @@ struct Parameters {
     p | balanceByCost;
     p | lbPeriod;
     p | reuseLeaves;
+    p | steal;
     p | iterations;
     p | timerMask;
     p | dumpStep;

@@ -2,6 +2,7 @@
 #include "Messages.h"
 #include "DataManager.h"
 #include "Parameters.h"
+#include "Steal.h"
 
 #include <fstream>
 
@@ -104,6 +105,7 @@ void TreePiece::startTraversal(){
   }
 
   remoteTraversalState.reset(this,numGroups,NULL);
+  remoteTraversalState.resetGroups(walkGroups.data(),numGroups);
   remoteTraversalWorker.reset(this,&remoteTraversalState);
   RescheduleMsg *msg = new (NUM_PRIORITY_BITS) RescheduleMsg;
   *(int *)CkPriorityPtr(msg) = REMOTE_GRAVITY_PRIORITY;
@@ -111,7 +113,9 @@ void TreePiece::startTraversal(){
   thisProxy[thisIndex].doRemoteGravity(msg);
 
   localTraversalState.reset(this,numGroups,NULL);
+  localTraversalState.resetGroups(walkGroups.data(),numGroups);
   localTraversalWorker.reset(this,&localTraversalState);
+  if(globalParams.steal) stealPublish(this,numGroups);
 
   msg = new (NUM_PRIORITY_BITS) RescheduleMsg;
   *(int *)CkPriorityPtr(msg) = LOCAL_GRAVITY_PRIORITY;
@@ -124,6 +128,32 @@ void TreePiece::startTraversal(){
 void TreePiece::doLocalGravity(RescheduleMsg *msg){
   PE_DIAG_TIME(busyLocal);
   const int numGroups = walkGroups.size();
+  if(globalParams.steal){
+    // Take from the back of the deque what the owner's pass would have walked
+    // next; groups taken by other PEs come back through stolenLocalDone.
+    // Whoever brings pending to zero reports the local traversal done.
+    int groups[WALK_GROUP_MAX_BUCKETS * 2];
+    bool more = false;
+    const int k = stealPopOwn(this, globalParams.yieldPeriod, groups,
+                              WALK_GROUP_MAX_BUCKETS * 2, more);
+    for(int j = 0; j < k; j++){
+      const WalkGroup &g = walkGroups[groups[j]];
+      localTraversalWorker.setContext(WalkContext(&g,allBuckets(g)));
+      trav.gravityWalk(root,&localTraversalWorker,&localTraversalState,allBuckets(g));
+      localTraversalWorker.endWalk();
+    }
+    if(k > 0 && localTraversalState.decrPending(k)){
+      localGravityDone();
+      delete msg;
+    }
+    else if(more){
+      thisProxy[thisIndex].doLocalGravity(msg);
+    }
+    else{
+      delete msg;
+    }
+    return;
+  }
   int i = 0, buckets = 0;
   while(buckets < globalParams.yieldPeriod && localTraversalState.current < numGroups){
     const WalkGroup &g = walkGroups[localTraversalState.current];
@@ -153,6 +183,7 @@ void TreePiece::doRemoteGravity(RescheduleMsg *msg){
     remoteTraversalWorker.setContext(WalkContext(&g,allBuckets(g)));
     trav.gravityWalk(root,&remoteTraversalWorker,&remoteTraversalState,allBuckets(g));
     remoteTraversalWorker.endWalk();
+    remoteTraversalState.groupWalkedByOwner(remoteTraversalState.current);
     remoteTraversalState.current++;
     buckets += g.numBuckets;
     i++;
@@ -169,6 +200,16 @@ void TreePiece::doRemoteGravity(RescheduleMsg *msg){
 
 void TreePiece::localGravityDone(){
   traversalDone();
+}
+
+void TreePiece::stolenLocalDone(int n, CmiUInt8 pn, CmiUInt8 pp, CmiUInt8 oc){
+#ifdef STATISTICS
+  localTraversalState.numInteractions[0] += pn;
+  localTraversalState.numInteractions[1] += pp;
+  localTraversalState.numInteractions[2] += oc;
+#endif
+  stealStats.lost += n;
+  if(localTraversalState.decrPending(n)) localGravityDone();
 }
 
 void TreePiece::remoteGravityDone(){ 

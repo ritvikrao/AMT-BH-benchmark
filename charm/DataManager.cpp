@@ -1,4 +1,5 @@
 #include "DataManager.h"
+#include "Steal.h"
 #include "Reduction.h"
 #include "defines.h"
 #include "Messages.h"
@@ -1251,6 +1252,7 @@ bool CompareNodePtrToKey(void *a, Key k){
 }
 
 void DataManager::startTraversal(){
+  if(globalParams.steal) stealInit();
   // grav() counts this step's interactions into each particle's cost, which
   // the next step's decomposition balances.
   for(int i = 0; i < myNumParticles; i++) myParticles[i].cost = 0.0;
@@ -1553,6 +1555,9 @@ void DataManager::finishIteration(){
 
   DtReductionStruct dtred;
   findMinVByA(dtred);
+  dtred.stealPublished = stealStats.published;
+  dtred.stealTaken = stealStats.taken;
+  stealStats.reset();
 
 #ifdef STATISTICS
   dtred.pnInteractions = numInteractions[0];
@@ -1608,6 +1613,10 @@ void DataManager::advance(CkReductionMsg *msg){
 #ifdef STATISTICS
     CkPrintf("[STATS] node inter %lu part inter %lu open crit %lu dt %f\n", dtred->pnInteractions, dtred->ppInteractions, dtred->openCrit, globalParams.dtime);
 #endif
+    if(globalParams.steal)
+      CkPrintf("[STEAL] step %d: %lu of %lu local walks done by another PE (%.1f%%)\n",
+               iteration, (unsigned long)dtred->stealTaken, (unsigned long)dtred->stealPublished,
+               dtred->stealPublished ? 100.0*dtred->stealTaken/dtred->stealPublished : 0.0);
   }
 
   CkAssert(pendingMoments.empty());

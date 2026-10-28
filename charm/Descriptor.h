@@ -208,8 +208,13 @@ struct DtReductionStruct {
 #endif
   Real vbya;
   bool haveNaN;
+  // Work stealing (Steal.h): local walks offered and done by another PE.
+  CmiUInt8 stealPublished;
+  CmiUInt8 stealTaken;
 
   DtReductionStruct &operator+=(const DtReductionStruct &other){
+    stealPublished += other.stealPublished;
+    stealTaken += other.stealTaken;
 #ifdef STATISTICS
     pnInteractions += other.pnInteractions;
     ppInteractions += other.ppInteractions;
