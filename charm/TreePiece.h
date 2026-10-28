@@ -73,6 +73,9 @@ class TreePiece : public CBase_TreePiece {
   // the group's n particles, five per particle, and its interaction counts.
   void stolenLocalDone(int g, int n, double *sums, CmiUInt8 pn, CmiUInt8 pp, CmiUInt8 oc);
 
+  // With -steal=1 the owner's own local walks are idle-time work too
+  // (Steal.h): one group, on this PE's thread, outside any entry method.
+  void doOwnLocalGroup(int g);
   // For stolen walks: the owner's tree and its groups.
   Node<ForceData> *getRoot() const { return root; }
   const WalkGroup &getGroup(int g) const { return walkGroups[g]; }

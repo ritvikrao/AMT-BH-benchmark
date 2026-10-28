@@ -109,13 +109,28 @@ void runStolen(TreePiece *tp, int g){
   treePieceProxy[tp->getIndex()].stolenLocalDone(g, n, sums.data(), pn, pp, oc);
 }
 
-// Idle callback: take one local walk from a TreePiece of another PE of this
-// process, from the front of its queue (the owner takes from the back).
+// Idle callback: one local walk. This PE's own first (from the back, done in
+// place), else one from the front of a TreePiece of another PE.
 void stealIdle(void *){
   if(table == NULL || table->queued.load(std::memory_order_relaxed) == 0) return;
-  stealStats.attempts++;
   const int me = CmiMyRank();
   const int n = table->ranks;
+  {
+    PeQueues &pq = table->pes[me];
+    std::unique_lock<std::mutex> lk(pq.lock);
+    if(!pq.pieces.empty()){
+      TreePiece *tp = pq.pieces.back();
+      std::deque<int> &q = tp->stealQueue();
+      const int g = q.back();
+      q.pop_back();
+      if(q.empty()) pq.pieces.pop_back();
+      table->queued.fetch_sub(1, std::memory_order_relaxed);
+      lk.unlock();
+      tp->doOwnLocalGroup(g);
+      return;
+    }
+  }
+  stealStats.attempts++;
   const int start = nextRand() % n;
   for(int t = 0; t < n; t++){
     const int r = (start + t) % n;
@@ -170,31 +185,6 @@ void stealPublish(TreePiece *tp, int numGroups){
   if(numGroups > 0) pq.pieces.push_back(tp);
   table->queued.fetch_add(numGroups, std::memory_order_relaxed);
   stealStats.published += numGroups;
-}
-
-int stealPopOwn(TreePiece *tp, int maxBuckets, int *out, int cap, bool &more){
-  PeQueues &pq = table->pes[CmiMyRank()];
-  std::lock_guard<std::mutex> lk(pq.lock);
-  std::deque<int> &q = tp->stealQueue();
-  int k = 0, buckets = 0;
-  while(k < cap && buckets < maxBuckets && !q.empty()){
-    const int g = q.back();
-    q.pop_back();
-    buckets += tp->getGroup(g).numBuckets;
-    out[k++] = g;
-  }
-  if(q.empty()){
-    for(size_t i = 0; i < pq.pieces.size(); i++){
-      if(pq.pieces[i] == tp){
-        pq.pieces[i] = pq.pieces.back();
-        pq.pieces.pop_back();
-        break;
-      }
-    }
-  }
-  more = !q.empty();
-  if(k > 0) table->queued.fetch_sub(k, std::memory_order_relaxed);
-  return k;
 }
 
 #include "Traversal_defs.h"

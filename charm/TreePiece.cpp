@@ -113,7 +113,14 @@ void TreePiece::startTraversal(){
 
   localTraversalState.reset(this,numGroups,NULL);
   localTraversalWorker.reset(this,&localTraversalState);
-  if(globalParams.steal) stealPublish(this,numGroups);
+  if(globalParams.steal){
+    // The local walks are done from the idle callback -- by this PE when it
+    // has nothing else to do, by another PE of the process otherwise -- so
+    // no doLocalGravity message: the remote walk alone drives the critical
+    // path and the local half fills the gaps on whichever PE has them.
+    stealPublish(this,numGroups);
+    return;
+  }
 
   msg = new (NUM_PRIORITY_BITS) RescheduleMsg;
   *(int *)CkPriorityPtr(msg) = LOCAL_GRAVITY_PRIORITY;
@@ -126,32 +133,6 @@ void TreePiece::startTraversal(){
 void TreePiece::doLocalGravity(RescheduleMsg *msg){
   PE_DIAG_TIME(busyLocal);
   const int numGroups = walkGroups.size();
-  if(globalParams.steal){
-    // Take from the back of the deque what the owner's pass would have walked
-    // next; groups taken by other PEs come back through stolenLocalDone.
-    // Whoever brings pending to zero reports the local traversal done.
-    int groups[WALK_GROUP_MAX_BUCKETS * 2];
-    bool more = false;
-    const int k = stealPopOwn(this, globalParams.yieldPeriod, groups,
-                              WALK_GROUP_MAX_BUCKETS * 2, more);
-    for(int j = 0; j < k; j++){
-      const WalkGroup &g = walkGroups[groups[j]];
-      localTraversalWorker.setContext(WalkContext(&g,allBuckets(g)));
-      trav.gravityWalk(root,&localTraversalWorker,&localTraversalState,allBuckets(g));
-      localTraversalWorker.endWalk();
-    }
-    if(k > 0 && localTraversalState.decrPending(k)){
-      localGravityDone();
-      delete msg;
-    }
-    else if(more){
-      thisProxy[thisIndex].doLocalGravity(msg);
-    }
-    else{
-      delete msg;
-    }
-    return;
-  }
   int i = 0, buckets = 0;
   while(buckets < globalParams.yieldPeriod && localTraversalState.current < numGroups){
     const WalkGroup &g = walkGroups[localTraversalState.current];
@@ -197,6 +178,15 @@ void TreePiece::doRemoteGravity(RescheduleMsg *msg){
 
 void TreePiece::localGravityDone(){
   traversalDone();
+}
+
+void TreePiece::doOwnLocalGroup(int g){
+  PE_DIAG_TIME(busyLocal);
+  const WalkGroup &grp = walkGroups[g];
+  localTraversalWorker.setContext(WalkContext(&grp,allBuckets(grp)));
+  trav.gravityWalk(root,&localTraversalWorker,&localTraversalState,allBuckets(grp));
+  localTraversalWorker.endWalk();
+  if(localTraversalState.decrPending(1)) localGravityDone();
 }
 
 // Add what another PE's walk of group g gathered into the group's particles:

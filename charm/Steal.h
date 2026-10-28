@@ -19,10 +19,16 @@
 // remote walk to be finished first, and measured on Delta that condition
 // starved the thieves: 90% of idle attempts found no such group.)
 //
-// Each TreePiece keeps a deque of the local walks not yet started. The owner
-// takes from the back, in doLocalGravity as before; an idle PE of the same
-// process (Converse's PROCESSOR_IDLE conditions) takes from the front of some
-// TreePiece of another PE. One lock per PE covers the deques of its
+// Each TreePiece keeps a deque of the local walks not yet started. They are
+// idle-time work for the whole process: a PE with nothing else to do
+// (Converse's PROCESSOR_IDLE conditions) first takes one of its own
+// TreePieces' walks, from the back, and does it in place; failing that it
+// takes one from the front of some TreePiece of another PE. The owners do
+// not run local walks from their message queues at all, so the remote walks
+// drive the critical path and the local half fills the gaps -- a heavy PE's
+// local walks stay available to the light ones instead of being consumed
+// early by their owner. (Measured before this: thieves got 16% of the local
+// walks, because the owners had done the rest by the time anyone was idle.) One lock per PE covers the deques of its
 // TreePieces and the list of those that still have work. Stealing stays
 // inside the process: the owner's tree is only addressable there.
 
@@ -48,8 +54,5 @@ extern thread_local StealStats stealStats;
 void stealInit();
 // The owner offers its numGroups local walks (TreePiece::startTraversal).
 void stealPublish(TreePiece *tp, int numGroups);
-// The owner takes up to maxBuckets buckets' worth of its own walks from the
-// back; returns how many groups, in out[]; more says whether any are left.
-int stealPopOwn(TreePiece *tp, int maxBuckets, int *out, int cap, bool &more);
 
 #endif
