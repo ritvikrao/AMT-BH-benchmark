@@ -149,6 +149,11 @@ class DataManager : public CBase_DataManager {
   // Flush state: runs of particles bound for flushDest, sent as one message.
   int flushDest;
   std::vector<std::pair<Particle *, int> > flushRuns;
+  // Runs bound for this PE itself: left in myParticles, never put in a
+  // message. They lie in key order and in address order, so after the flush
+  // they are compacted in place and the arrivals merged in.
+  std::vector<std::pair<Particle *, int> > keptRuns;
+  long numParticlesKept;
   void emitFlushRun();
   int homeOf(int tp);
   void expectParticles();
