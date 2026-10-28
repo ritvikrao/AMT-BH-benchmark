@@ -114,6 +114,11 @@ class DataManager : public CBase_DataManager {
   // Warn once, not once per decomposition round, when -p runs out.
   bool warnedTreePieceBudget;
   ActiveBinInfo<NodeDescriptor> activeBins;
+  // This PE's sparse histogram contribution (sendHistogram) and, on PE 0,
+  // the merged histogram expanded to one descriptor per bin
+  // (receiveHistogram). Members so their storage is reused across rounds.
+  std::vector<SparseBin> histogramContribution;
+  std::vector<NodeDescriptor> histogramDense;
 
   TreePieceCounter localTreePieces;
   int numLocalTreePieces;

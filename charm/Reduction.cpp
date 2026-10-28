@@ -2,6 +2,7 @@
 #include "OrientedBox.h"
 #include "defines.h"
 #include "ActiveBinInfo.h"
+#include <vector>
 
 CkReduction::reducerType BoundingBoxGrowReductionType;
 CkReduction::reducerType NodeDescriptorReductionType;
@@ -18,17 +19,45 @@ CkReductionMsg *BoundingBoxGrowReduction(int nmsgs, CkReductionMsg **msgs){
   return CkReductionMsg::buildNew(sizeof(BoundingBox),&bb);
 }
 
+// Merge sparse histogram contributions (SparseBin lists, each in bin order,
+// possibly empty). Bins are combined with NodeDescriptor::grow -- a sum of
+// counts and costs and a min/max of keys -- so the result does not depend on
+// the order the messages arrive in. A dense scratch array over the bins seen
+// keeps the merge linear in the entries plus the largest bin index; the
+// output lists only the bins that have particles, in bin order.
 CkReductionMsg *NodeDescriptorReduction(int nmsgs, CkReductionMsg **msgs){
-  int numElements = (msgs[0]->getSize()/sizeof(NodeDescriptor));
+  int maxBin = -1;
+  for(int j = 0; j < nmsgs; j++){
+    const int n = msgs[j]->getSize()/sizeof(SparseBin);
+    const SparseBin *e = (const SparseBin *)msgs[j]->getData();
+    if(n > 0 && e[n-1].bin > maxBin) maxBin = e[n-1].bin;
+  }
+  if(maxBin < 0) return CkReductionMsg::buildNew(0, NULL);
 
-  for(int i = 0; i < numElements; i++){
-    NodeDescriptor *zeroth = ((NodeDescriptor*)msgs[0]->getData())+i;
-    for(int j = 1; j < nmsgs; j++){
-      const NodeDescriptor &source = *(((NodeDescriptor *)msgs[j]->getData())+i);
-      zeroth->grow(source);
+  std::vector<NodeDescriptor> acc(maxBin+1);
+  std::vector<char> seen(maxBin+1, 0);
+  int numOut = 0;
+  for(int j = 0; j < nmsgs; j++){
+    const int n = msgs[j]->getSize()/sizeof(SparseBin);
+    const SparseBin *e = (const SparseBin *)msgs[j]->getData();
+    for(int i = 0; i < n; i++){
+      const int b = e[i].bin;
+      if(!seen[b]){ seen[b] = 1; numOut++; acc[b] = e[i].d; }
+      else acc[b].grow(e[i].d);
     }
   }
-  return CkReductionMsg::buildNew(msgs[0]->getSize(),msgs[0]->getData());
+
+  CkReductionMsg *out = CkReductionMsg::buildNew(sizeof(SparseBin)*numOut, NULL);
+  SparseBin *o = (SparseBin *)out->getData();
+  int k = 0;
+  for(int b = 0; b <= maxBin; b++){
+    if(!seen[b]) continue;
+    o[k].bin = b;
+    o[k].d = acc[b];
+    k++;
+  }
+  CkAssert(k == numOut);
+  return out;
 }
 
 CkReductionMsg *DtReduction(int nmsgs, CkReductionMsg **msgs){

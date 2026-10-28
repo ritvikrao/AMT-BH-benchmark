@@ -118,6 +118,19 @@ struct NodeDescriptor {
   }
 };
 
+// One entry of a PE's histogram contribution: the descriptor of bin `bin`
+// (an index into the active-bin list, the same on every PE) for the particles
+// this PE holds. A PE's particles cover a stretch of the key space, so of the
+// -p bins only a few dozen have any of them; the contribution lists those and
+// leaves out the rest, which turns a 160 KB message per PE at -p 4016 into a
+// few KB and makes the reduction's cost proportional to the particles' spread
+// rather than to the bin count. PE 0 expands the merged list back to one
+// descriptor per bin (DataManager::receiveHistogram).
+struct SparseBin {
+  int bin;
+  NodeDescriptor d;
+};
+
 class TreePiece;
 struct ParticleMsg;
 struct TreePieceDescriptor {
