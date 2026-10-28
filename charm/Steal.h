@@ -49,6 +49,20 @@ struct StealStats {
 };
 extern thread_local StealStats stealStats;
 
+// Heavy PEs (-stealheavy): a PE whose particles had more than stealheavy
+// times the mean interactions last step does no local walks of its own while
+// its remote walk is still open, and steals none: its time goes to the remote
+// walk and to serving, which are on the critical path and cannot move, and
+// its local walks are left to the others. Thieves try heavy PEs' queues
+// first. Measured before this (Delta 8x15, -DPE_DIAG): the slowest PE's local
+// half was already down to half the mean, but it still spent 18% of its time
+// on it, while light PEs had slack left.
+void stealSetHeavy(bool heavy);
+// This PE's open remote traversals (TreePiece::startTraversal and
+// remoteGravityDone).
+void stealRemoteOpened();
+void stealRemoteClosed();
+
 // Once per PE, before the first traversal: the process-wide table and this
 // PE's idle callbacks.
 void stealInit();

@@ -109,6 +109,8 @@ class DataManager : public CBase_DataManager {
 
   int iteration;
   int decompIterations;
+  // This PE's particles' interactions last step (Steal.h, heavy PEs).
+  double myInteractionsLast;
   // Warn once, not once per decomposition round, when -p runs out.
   bool warnedTreePieceBudget;
   ActiveBinInfo<NodeDescriptor> activeBins;

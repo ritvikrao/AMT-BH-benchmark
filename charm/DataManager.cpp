@@ -53,6 +53,7 @@ DataManager::DataManager() :
   familiesMerged(0),
   binsSplit(0),
   iteration(0),
+  myInteractionsLast(0.0),
   haveRanges(false),
   keyRanges(NULL),
   tpCounts(NULL),
@@ -1565,6 +1566,7 @@ void DataManager::finishIteration(){
   dtred.pnInteractions = numInteractions[0];
   dtred.ppInteractions = numInteractions[1];
   dtred.openCrit = numInteractions[2];
+  myInteractionsLast = (double)numInteractions[0] + (double)numInteractions[1];
   numInteractions[0] = 0;
   numInteractions[1] = 0;
   numInteractions[2] = 0;
@@ -1579,6 +1581,12 @@ void DataManager::advance(CkReductionMsg *msg){
   timers.start(PHASE_INTEGRATION);
 
   DtReductionStruct *dtred = (DtReductionStruct *)(msg->getData());
+#ifdef STATISTICS
+  if(globalParams.steal && globalParams.stealHeavy > 0.0){
+    const double mean = ((double)dtred->pnInteractions + (double)dtred->ppInteractions) / CkNumPes();
+    stealSetHeavy(mean > 0.0 && myInteractionsLast > globalParams.stealHeavy * mean);
+  }
+#endif
   if(dtred->haveNaN){
     CkPrintf("(%d) iteration %d NaN accel detected! Exit...\n", CkMyPe(), iteration);
     markNaNBuckets();

@@ -114,6 +114,7 @@ void TreePiece::startTraversal(){
   localTraversalState.reset(this,numGroups,NULL);
   localTraversalWorker.reset(this,&localTraversalState);
   if(globalParams.steal){
+    stealRemoteOpened();
     // The local walks are done from the idle callback -- by this PE when it
     // has nothing else to do, by another PE of the process otherwise -- so
     // no doLocalGravity message: the remote walk alone drives the critical
@@ -218,6 +219,7 @@ void TreePiece::stolenLocalDone(int g, int n, double *sums, CmiUInt8 pn, CmiUInt
 }
 
 void TreePiece::remoteGravityDone(){ 
+  if(globalParams.steal && !walkGroups.empty()) stealRemoteClosed();
   traversalDone();
 }
 

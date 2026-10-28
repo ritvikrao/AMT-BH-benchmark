@@ -150,6 +150,8 @@ void Main::setParameters(CkArgMsg *m){
 
   globalParams.steal = params.getiparam("steal", DEFAULT_STEAL, table) != 0;
   CkPrintf("steal: %d\n", (int)globalParams.steal);
+  globalParams.stealHeavy = params.getrparam("stealheavy", DEFAULT_STEAL_HEAVY, table);
+  CkPrintf("stealheavy: %g\n", globalParams.stealHeavy);
 
   it = table.find("timers");
   string timerSpec = (it == table.end()) ? string(DEFAULT_TIMERS) : it->second;
@@ -536,6 +538,7 @@ void Main::usage(){
   usage["yield"] = "how many buckets to process before yielding processor";
   usage["lbperiod"] = "balance load (+balancer) after every Nth step; 0, the default, never";
   usage["steal"] = "1: idle PEs of a process take other PEs' local walks (work stealing); 0, the default, off";
+  usage["stealheavy"] = "with -steal=1: a PE with more than this times the mean interactions leaves its local walks to others while its remote walk runs (default 1.1; 0 off)";
   usage["reuseleaves"] = "1 (default): start each step's decomposition from the last step's leaves; 0: from scratch";
   usage["output"] = "write ParaView snapshots with this path prefix, giving "
                     "<prefix>.pvd to open; omit for no output";

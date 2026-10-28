@@ -24,6 +24,8 @@ struct PeQueues {
   std::mutex lock;
   // TreePieces of this PE whose deque is not empty.
   std::vector<TreePiece *> pieces;
+  // Set by the PE itself each step (stealSetHeavy); read by thieves.
+  std::atomic<bool> heavy;
 };
 
 struct Table {
@@ -38,6 +40,8 @@ Table *table = NULL;
 std::once_flag tableOnce;
 thread_local bool registered = false;
 thread_local unsigned rng = 0;
+thread_local bool heavyPe = false;
+thread_local int remoteOpen = 0;
 
 // The thief's walk state. Thread-local, like the interaction lists it binds
 // (gravity.h): a stolen walk is one PE's work from start to end.
@@ -115,6 +119,9 @@ void stealIdle(void *){
   if(table == NULL || table->queued.load(std::memory_order_relaxed) == 0) return;
   const int me = CmiMyRank();
   const int n = table->ranks;
+  // A heavy PE with its remote walk open keeps itself free for replies and
+  // requests; its local walks are for the others.
+  if(heavyPe && remoteOpen > 0) return;
   {
     PeQueues &pq = table->pes[me];
     std::unique_lock<std::mutex> lk(pq.lock);
@@ -132,10 +139,13 @@ void stealIdle(void *){
   }
   stealStats.attempts++;
   const int start = nextRand() % n;
+  // Two passes: heavy victims first, then the rest.
+  for(int pass = 0; pass < 2; pass++)
   for(int t = 0; t < n; t++){
     const int r = (start + t) % n;
     if(r == me) continue;
     PeQueues &pq = table->pes[r];
+    if((pass == 0) != pq.heavy.load(std::memory_order_relaxed)) continue;
     std::unique_lock<std::mutex> lk(pq.lock, std::try_to_lock);
     if(!lk.owns_lock()) continue;
     for(size_t i = 0; i < pq.pieces.size(); i++){
@@ -159,11 +169,19 @@ void stealIdle(void *){
 
 } // namespace
 
+void stealSetHeavy(bool heavy){
+  heavyPe = heavy;
+  if(table != NULL) table->pes[CmiMyRank()].heavy.store(heavy, std::memory_order_relaxed);
+}
+void stealRemoteOpened(){ remoteOpen++; }
+void stealRemoteClosed(){ remoteOpen--; }
+
 void stealInit(){
   std::call_once(tableOnce, [](){
     Table *t = new Table;
     t->ranks = CmiMyNodeSize();
     t->pes = new PeQueues[t->ranks];
+    for(int r = 0; r < t->ranks; r++) t->pes[r].heavy.store(false);
     t->queued.store(0);
     table = t;
   });

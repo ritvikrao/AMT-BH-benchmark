@@ -69,6 +69,10 @@ struct Parameters {
 
   // -steal=1: idle PEs of a process do other PEs' local walks (Steal.h).
   bool steal;
+  // -stealheavy=f: with -steal=1, a PE whose particles had more than f times
+  // the mean interactions last step leaves its local walks to the others
+  // while its remote walk is open (Steal.h). 0 turns this off.
+  double stealHeavy;
 
   int iterations;
 
@@ -107,6 +111,7 @@ struct Parameters {
     p | lbPeriod;
     p | reuseLeaves;
     p | steal;
+    p | stealHeavy;
     p | iterations;
     p | timerMask;
     p | dumpStep;
