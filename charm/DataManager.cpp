@@ -1252,12 +1252,12 @@ bool CompareNodePtrToKey(void *a, Key k){
   return (Node<ForceData>::getParticleLevelKey(node) >= k);
 }
 
-void DataManager::stolenWalk(CmiUInt8 treePiece, int group){
-  stealRunStolen((TreePiece *)(uintptr_t)treePiece, group);
+void DataManager::stolenWalk(CmiUInt8 treePiece, int g){
+  stealRunStolen((TreePiece *)(uintptr_t)treePiece, g);
 }
 
-void DataManager::ownIdleWalk(CmiUInt8 treePiece, int group){
-  ((TreePiece *)(uintptr_t)treePiece)->doOwnLocalGroup(group);
+void DataManager::ownIdleWalk(CmiUInt8 treePiece, int g){
+  ((TreePiece *)(uintptr_t)treePiece)->doOwnLocalGroup(g);
 }
 
 void DataManager::startTraversal(){
