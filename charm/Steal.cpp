@@ -11,6 +11,7 @@
 #include <atomic>
 #include "gravity.h"
 #include "Packet.h"
+#include "Timers.h"
 
 extern CProxy_TreePiece treePieceProxy;
 extern Parameters globalParams;
@@ -54,6 +55,7 @@ inline unsigned nextRand(){
 }
 
 void runStolen(TreePiece *tp, int g){
+  PE_DIAG_TIME(busyLocal);
   const WalkGroup &group = tp->getGroup(g);
   const uint64_t all = allBuckets(group);
   // Private copy of the group's particles, sums cleared.
