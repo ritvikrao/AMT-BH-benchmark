@@ -23,7 +23,7 @@ echo "=== s/step mean of steps 3..$((STEPS-1)), by configuration (mean of reps):
 for f in "$LOGS"/${BT}-ppc*_n${N}_N1_c${PES}_p*_r1.log; do
   g=${f%_r1.log}
   printf '%-56s ' "$(basename "$g")"
-  for r in 1 2; do grep -E '^\[STEP\] step [3-9]' "${g}_r$r.log" | awk '{for(i=1;i<=NF;i++) if($i=="step") s+=$(i+1); n++} END{if(n) printf "%.4f ", s/n}'; done
+  for r in 1 2; do grep -E '^\[STEP\] step [3-9]' "${g}_r$r.log" | awk '{for(i=1;i<=NF;i++) if($i=="step") t=$(i+1); s+=t; n++} END{if(n) printf "%.4f ", s/n}'; done
   grep -m1 -E '^\[BALANCE\]' "${g}_r1.log" | grep -oE 'in [0-9]+ of [0-9]+ TreePieces' ; echo
 done
 echo "=== energies:"; for f in "$LOGS"/${BT}-ppc*_n${N}_N1_c${PES}_p*_r*.log; do grep '^\[ENERGY\]' "$f" | md5sum | cut -c1-8; done | sort | uniq -c
