@@ -4,6 +4,7 @@ mainmodule barnes {
   
   readonly CProxy_TreePiece treePieceProxy;
   readonly CProxy_DataManager dataManagerProxy;
+  readonly CProxy_RangeShare rangeShareProxy;
   readonly CProxy_Main mainProxy;
   readonly Parameters globalParams;
 
@@ -66,6 +67,12 @@ mainmodule barnes {
     entry void atSync();
   };
 
+  // One copy of the decomposition's result per process (RangeShare.h).
+  nodegroup RangeShare {
+    entry RangeShare();
+    entry void receiveRanges(RangeMsg *msg);
+  };
+
   group DataManager {
     // Work stealing (Steal.h): the walks done from the idle callback go
     // through these so that Projections traces them as entry methods.
@@ -78,7 +85,7 @@ mainmodule barnes {
     entry void decompose(BoundingBox &universe);
     entry void receiveHistogram(CkReductionMsg *msg);
     entry void receiveSplitters(SplitterMsg *msg);
-    entry void sendParticles(RangeMsg *msg);
+    entry void rangesReady();
     entry void receiveParticles(ParticleMsg *msg);
     entry void receiveMoments(MomentsMsg *msg);
 

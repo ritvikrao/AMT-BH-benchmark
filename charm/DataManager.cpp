@@ -1,4 +1,5 @@
 #include "DataManager.h"
+#include "RangeShare.h"
 #include "Steal.h"
 #include <algorithm>
 #include "Reduction.h"
@@ -20,6 +21,7 @@
 using namespace std;
 extern CProxy_TreePiece treePieceProxy;
 extern CProxy_Main mainProxy;
+extern CProxy_RangeShare rangeShareProxy;
 
 // Particles sort by key. Ties (bodies in one finest cell) keep the order of
 // the input to the sort, which std::sort does not promise; the tree does not
@@ -84,7 +86,6 @@ DataManager::DataManager() :
   haveRanges(false),
   keyRanges(NULL),
   tpCounts(NULL),
-  rangeMsg(NULL),
   numParticlesArrived(0),
   numParticlesKept(0),
   numParticlesExpected(0),
@@ -803,7 +804,7 @@ void DataManager::receiveHistogram(CkReductionMsg *msg){
     rmsg->numTreePieces = numTreePieces;
     memcpy(rmsg->keys,keyRanges,sizeof(Key)*numKeys);
     memcpy(rmsg->counts,tpCounts,sizeof(int)*numTreePieces);
-    thisProxy.sendParticles(rmsg);
+    rangeShareProxy.receiveRanges(rmsg);
 
     haveRanges = true;
     expectParticles();
@@ -902,14 +903,14 @@ void DataManager::sendParticlesToTreePiece(Node<NodeDescriptor> *nd, int tp) {
   }
 }
 
-void DataManager::sendParticles(RangeMsg *msg){
+// The decomposition's result has arrived in this process (RangeShare).
+void DataManager::rangesReady(){
 
   if(CkMyPe() != 0){
+    const RangeMsg *msg = rangeShareProxy.ckLocalBranch()->ranges();
     numTreePieces = msg->numTreePieces;
     keyRanges = msg->keys;
     tpCounts = msg->counts;
-    // delete this later
-    rangeMsg = msg;
     // Flush before haveRanges: the particles being sent live in myParticles,
     // which processing the arrivals overwrites.
     flushParticles();
@@ -920,9 +921,7 @@ void DataManager::sendParticles(RangeMsg *msg){
     tryProcessParticles();
   }
   else{
-    CkAssert(numTreePieces == msg->numTreePieces);
     CkAssert(haveRanges);
-    delete msg;
   }
 
   // there are tree piece on this PE
@@ -1779,7 +1778,6 @@ void DataManager::advance(CkReductionMsg *msg){
     delete[] keyRanges;
     delete[] tpCounts;
   }
-  else delete rangeMsg;
   keyRanges = NULL;
   tpCounts = NULL;
 

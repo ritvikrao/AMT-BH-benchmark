@@ -3,6 +3,7 @@
 
 #include "TreePiece.h"
 #include "DataManager.h"
+#include "RangeShare.h"
 #include "Reduction.h"
 #include "Messages.h"
 
@@ -17,6 +18,7 @@ using namespace std;
 
 CProxy_TreePiece treePieceProxy;
 CProxy_DataManager dataManagerProxy;
+CProxy_RangeShare rangeShareProxy;
 CProxy_Main mainProxy;
 
 Parameters globalParams;
@@ -25,6 +27,7 @@ Main::Main(CkArgMsg *msg){
   setParameters(msg);
 
   dataManagerProxy = CProxy_DataManager::ckNew();
+  rangeShareProxy = CProxy_RangeShare::ckNew();
 
   CkArrayOptions opts(globalParams.numTreePieces);
   treePieceProxy = CProxy_TreePiece::ckNew(opts);

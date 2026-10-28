@@ -127,10 +127,9 @@ class DataManager : public CBase_DataManager {
 
   Key *keyRanges;
   // Exact particle count per TreePiece from the final histogram round: owned
-  // by PE 0, the RangeMsg's array elsewhere.
+  // by PE 0, the process's shared RangeMsg (RangeShare) elsewhere.
   int *tpCounts;
   bool haveRanges;
-  RangeMsg *rangeMsg;
 
   // The particle exchange. Each DM sends one message per destination PE that
   // gets any of its particles (not one per TreePiece), and a DM has all of its
@@ -260,7 +259,7 @@ class DataManager : public CBase_DataManager {
   void decompose(const BoundingBox &universe);
   void receiveHistogram(CkReductionMsg *msg);
   void receiveSplitters(SplitterMsg *msg);
-  void sendParticles(RangeMsg *msg);
+  void rangesReady();
   void sendParticlesToTreePiece(Node<NodeDescriptor> *nd, int tp);
 
   void receiveMoments(MomentsMsg *msg);
