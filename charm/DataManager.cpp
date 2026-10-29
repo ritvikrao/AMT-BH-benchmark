@@ -1,5 +1,6 @@
 #include "DataManager.h"
 #include "Steal.h"
+#include <algorithm>
 #include "Reduction.h"
 #include "defines.h"
 #include "Messages.h"
@@ -19,6 +20,32 @@
 using namespace std;
 extern CProxy_TreePiece treePieceProxy;
 extern CProxy_Main mainProxy;
+
+// Particles sort by key. Ties (bodies in one finest cell) keep the order of
+// the input to the sort, which std::sort does not promise; the tree does not
+// depend on the order within a leaf.
+static inline bool byKey(const Particle &a, const Particle &b){ return a.key < b.key; }
+
+// -DEXCHANGE_DIAG: per-PE wall-clock split of the non-traversal phases,
+// printed by PEs 0 and 1 each step. Temporary instrumentation.
+#ifdef EXCHANGE_DIAG
+struct XDiag {
+  double t0, hash, sort1, bins, hist, kdk, freecache, freetree, flushwalk, flushemit, flushfree, copy, sort2, build, moments;
+  void start(){ t0 = CkWallTimer(); }
+  double lap(){ double t = CkWallTimer(); double d = t - t0; t0 = t; return d; }
+  void print(int step){
+    if(CkMyPe() > 1) return;
+    CkPrintf("[XDIAG] pe %d step %d ms: kdk %.2f freecache %.2f freetree %.2f | hash %.2f sort1 %.2f bins %.2f hist %.2f | flushwalk %.2f flushemit %.2f flushfree %.2f | copy %.2f sort2 %.2f build %.2f moments %.2f\n",
+      CkMyPe(), step, kdk*1e3, freecache*1e3, freetree*1e3, hash*1e3, sort1*1e3, bins*1e3, hist*1e3, flushwalk*1e3, flushemit*1e3, flushfree*1e3, copy*1e3, sort2*1e3, build*1e3, moments*1e3);
+  }
+};
+static thread_local XDiag xdiag;
+#define XD_START() xdiag.start()
+#define XD_LAP(f) xdiag.f = xdiag.lap()
+#else
+#define XD_START() ((void)0)
+#define XD_LAP(f) ((void)0)
+#endif
 extern Parameters globalParams;
 
 void copyMomentsToNode(Node<ForceData> *node, const MomentsExchangeStruct &mes){
@@ -59,6 +86,7 @@ DataManager::DataManager() :
   tpCounts(NULL),
   rangeMsg(NULL),
   numParticlesArrived(0),
+  numParticlesKept(0),
   numParticlesExpected(0),
   flushDest(-1),
   lbBoxReady(false),
@@ -379,8 +407,14 @@ void DataManager::decompose(const BoundingBox &universe){
   timers.start(PHASE_STEP);
   timers.start(PHASE_DECOMPOSITION);
 
+  XD_START();
   hashParticleCoordinates(universe.box);
-  myParticles.quickSort();
+  XD_LAP(hash);
+  // Nearly in key order already after the first step, so introsort is close
+  // to linear; CkVec::quickSort finished its blocks with a bubble sort that
+  // is quadratic even on sorted input.
+  std::sort(myParticles.getVec(), myParticles.getVec()+myNumParticles, byKey);
+  XD_LAP(sort1);
 
   // No traversal has run yet, so every particle weighs the same and the first
   // decomposition is by count. Set explicitly: the loaders size myParticles
@@ -425,7 +459,9 @@ void DataManager::decompose(const BoundingBox &universe){
 
   numTreePieces = 1;
   initHistogramParticles();
+  XD_LAP(bins);
   sendHistogram();
+  XD_LAP(hist);
 }
 
 void DataManager::initHistogramParticles(){
@@ -762,9 +798,12 @@ void DataManager::flushParticles(){
   for(int i = 0; i < leaves->length(); i++)
     lastLeaves[i] = (*leaves)[i].first->getKey();
 
+  XD_START();
   ParticleFlushWorker pfw(this);
   scaffoldTrav.preorderTraversal(sortingRoot,&pfw);
+  XD_LAP(flushwalk);
   emitFlushRun();
+  XD_LAP(flushemit);
 
   // done with sorting tree; delete
   FreeTreeWorker<NodeDescriptor> freeWorker;
@@ -772,6 +811,8 @@ void DataManager::flushParticles(){
 
   delete sortingRoot;
   sortingRoot = NULL;
+  numParticlesArrived += numParticlesKept;
+  XD_LAP(flushfree);
 }
 
 void DataManager::receiveSplitters(SplitterMsg *msg){
@@ -800,11 +841,20 @@ void DataManager::sendParticlesToTreePiece(Node<NodeDescriptor> *nd, int tp) {
 
   if(np > 0){
     int pe = homeOf(tp);
-    if(pe != flushDest){
-      emitFlushRun();
-      flushDest = pe;
+    if(pe == CkMyPe()){
+      // Stays here: in the steady state nearly every particle does, since
+      // TreePieces keep their PE and a body changes TreePiece only by
+      // crossing a boundary. No message, no copy.
+      keptRuns.push_back(std::make_pair(nd->getParticles(), np));
+      numParticlesKept += np;
     }
-    flushRuns.push_back(std::make_pair(nd->getParticles(), np));
+    else{
+      if(pe != flushDest){
+        emitFlushRun();
+        flushDest = pe;
+      }
+      flushRuns.push_back(std::make_pair(nd->getParticles(), np));
+    }
   }
 
   // only PE 0 has the correct ranges
@@ -947,22 +997,49 @@ void DataManager::buildLocalDescriptors(){
 }
 
 void DataManager::processSubmittedParticles(){
+  XD_START();
   myNumParticles = numParticlesExpected;
+  // The kept runs are pieces of the old array in increasing address and key
+  // order; close the gaps the departed particles left, in place. Only runs
+  // after the first gap move at all.
+  Particle *base = myParticles.getVec();
+  Particle *out = base;
+  for(size_t r = 0; r < keptRuns.size(); r++){
+    Particle *src = keptRuns[r].first;
+    const int n = keptRuns[r].second;
+    CkAssert(src >= out);
+    if(src != out) memmove(out, src, sizeof(Particle)*n);
+    out += n;
+  }
+  CkAssert(out - base == numParticlesKept);
+  keptRuns.clear();
+  // Growth copies the current length, so set it before resizing.
+  myParticles.length() = numParticlesKept;
   myParticles.resize(myNumParticles);
-  int offset = 0;
+  base = myParticles.getVec();
+  int offset = numParticlesKept;
   for(int i = 0; i < arrivedParticleMsgs.length(); i++){
     ParticleMsg *msg = arrivedParticleMsgs[i];
-    memcpy(myParticles.getVec()+offset,msg->part,sizeof(Particle)*msg->numParticles);
+    memcpy(base+offset,msg->part,sizeof(Particle)*msg->numParticles);
     offset += msg->numParticles;
     delete msg;
   }
   CkAssert(offset == myNumParticles);
   arrivedParticleMsgs.length() = 0;
   numParticlesArrived = 0;
+  const int numKept = numParticlesKept;
+  numParticlesKept = 0;
 
   buildLocalDescriptors();
+  XD_LAP(copy);
 
-  myParticles.quickSort();
+  // Kept particles are already in key order; sort the arrivals (a few, after
+  // the first step) and merge them in.
+  if(offset > numKept){
+    std::sort(base+numKept, base+offset, byKey);
+    std::inplace_merge(base, base+numKept, base+offset, byKey);
+  }
+  XD_LAP(sort2);
 
   if(iteration == 0) reportBalance();
 
@@ -972,6 +1049,7 @@ void DataManager::processSubmittedParticles(){
   timers.start(PHASE_TREEBUILD);
 
   buildTree();
+  XD_LAP(build);
   // add dummy tree piece whose index is larger than
   // that of all others. this is required to mark the
   // boundary of nodes/particles owned by this PE.
@@ -991,6 +1069,10 @@ void DataManager::processSubmittedParticles(){
   }
 
   flushMomentRequests();
+  XD_LAP(moments);
+#ifdef EXCHANGE_DIAG
+  xdiag.print(iteration);
+#endif
 }
 
 // How the decomposition actually came out, reduced once after the first
@@ -1619,7 +1701,9 @@ void DataManager::advance(CkReductionMsg *msg){
   }
 
   BoundingBox myBox;
+  XD_START();
   kickDriftKick(myBox.box,myBox.kineticEnergy,myBox.potentialEnergy);
+  XD_LAP(kdk);
 
   // Unpadded: the padding is applied once to the reduced universe, in
   // recvUnivBoundingBox. Padding each PE's box by a fraction of its own extent
@@ -1645,6 +1729,7 @@ void DataManager::advance(CkReductionMsg *msg){
   // safe to reset here, since all tree pieces 
   // must have finished iteration
   freeCachedData();
+  XD_LAP(freecache);
 
   submittedParticles.length() = 0;
   haveRanges = false;
@@ -1656,6 +1741,7 @@ void DataManager::advance(CkReductionMsg *msg){
   firstSplitterRound = true;
   freeTree();
   nodeTable.clear();
+  XD_LAP(freetree);
 
   CkAssert(activeBins.getNumCounts() == 0);
 
