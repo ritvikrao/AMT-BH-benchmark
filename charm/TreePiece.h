@@ -3,6 +3,7 @@
 
 #include "defines.h"
 #include <vector>
+#include <deque>
 #include "OrientedBox.h"
 #include "barnes.decl.h"
 #include "Particle.h"
@@ -27,6 +28,9 @@ class TreePiece : public CBase_TreePiece {
   std::vector<WalkGroup> walkGroups;
   void formWalkGroups();
   Node<ForceData> *root;
+  // Local walks not yet started, by group index (Steal.h): the owner takes
+  // from the back, idle PEs of the process from the front.
+  std::deque<int> localQueue;
 
   State localTraversalState;
   State remoteTraversalState;
@@ -65,6 +69,17 @@ class TreePiece : public CBase_TreePiece {
 
   void localGravityDone();
   void remoteGravityDone();
+  // A PE of this process did group g's local walk (Steal.h): its sums for
+  // the group's n particles, five per particle, and its interaction counts.
+  void stolenLocalDone(int g, int n, double *sums, CmiUInt8 pn, CmiUInt8 pp, CmiUInt8 oc);
+
+  // With -steal=1 the owner's own local walks are idle-time work too
+  // (Steal.h): one group, on this PE's thread, outside any entry method.
+  void doOwnLocalGroup(int g);
+  // For stolen walks: the owner's tree and its groups.
+  Node<ForceData> *getRoot() const { return root; }
+  const WalkGroup &getGroup(int g) const { return walkGroups[g]; }
+  std::deque<int> &stealQueue() { return localQueue; }
   void requestMoments(Key k, int replyTo);
 
   void quiescence();

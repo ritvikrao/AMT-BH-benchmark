@@ -109,6 +109,8 @@ class DataManager : public CBase_DataManager {
 
   int iteration;
   int decompIterations;
+  // This PE's particles' interactions last step (Steal.h, heavy PEs).
+  double myInteractionsLast;
   // Warn once, not once per decomposition round, when -p runs out.
   bool warnedTreePieceBudget;
   ActiveBinInfo<NodeDescriptor> activeBins;
@@ -147,6 +149,11 @@ class DataManager : public CBase_DataManager {
   // Flush state: runs of particles bound for flushDest, sent as one message.
   int flushDest;
   std::vector<std::pair<Particle *, int> > flushRuns;
+  // Runs bound for this PE itself: left in myParticles, never put in a
+  // message. They lie in key order and in address order, so after the flush
+  // they are compacted in place and the arrivals merged in.
+  std::vector<std::pair<Particle *, int> > keptRuns;
+  long numParticlesKept;
   void emitFlushRun();
   int homeOf(int tp);
   void expectParticles();
@@ -257,6 +264,10 @@ class DataManager : public CBase_DataManager {
   void receiveParticles(ParticleMsg *msg);
   void requestMoments(Key k, int replyTo);
   void advance(CkReductionMsg *);
+  // Steal.h: a local walk of another PE's TreePiece, and one of this PE's own,
+  // run from the idle callback through an inline entry method.
+  void stolenWalk(CmiUInt8 treePiece, int g);
+  void ownIdleWalk(CmiUInt8 treePiece, int g);
 #ifdef STATISTICS
   void traversalsDone(CmiUInt8 pnInter, CmiUInt8 ppInter, CmiUInt8 openCrit);
 #else

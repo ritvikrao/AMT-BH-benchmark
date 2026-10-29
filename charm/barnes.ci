@@ -58,6 +58,7 @@ mainmodule barnes {
     entry void startTraversal();
     entry void doLocalGravity(RescheduleMsg *);
     entry void doRemoteGravity(RescheduleMsg *);
+    entry void stolenLocalDone(int g, int n, double sums[5*n], CmiUInt8 pn, CmiUInt8 pp, CmiUInt8 oc);
 
     entry void requestParticles(RequestMsg *msg);
     entry void requestNode(RequestMsg *msg);
@@ -66,6 +67,11 @@ mainmodule barnes {
   };
 
   group DataManager {
+    // Work stealing (Steal.h): the walks done from the idle callback go
+    // through these so that Projections traces them as entry methods.
+    // Inline: the target is this PE's own branch, so they run in place.
+    entry [inline] void stolenWalk(CmiUInt8 treePiece, int g);
+    entry [inline] void ownIdleWalk(CmiUInt8 treePiece, int g);
     entry DataManager();
     entry void loadParticles(CkCallback &cb);
     entry void receiveCsvCounts(CkReductionMsg *msg);

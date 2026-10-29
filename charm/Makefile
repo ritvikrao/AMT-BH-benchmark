@@ -51,7 +51,7 @@ AR  = ar q
 CXX_DEPEND = $(CXX) -M -MM -MG -Wall $(APP_FLAGS)
 CFLAGS = $(OPTS) $(DEFINE_FLAGS) -g
 
-OBJECTS = Main.o DataManager.o TreePiece.o util.o Reduction.o Worker.o Request.o State.o SfcLB.o
+OBJECTS = Main.o DataManager.o TreePiece.o util.o Reduction.o Worker.o Request.o State.o SfcLB.o Steal.o
 SRC = Main.cpp DataManager.cpp TreePiece.cpp \
       util.cpp Reduction.cpp Worker.cpp Request.cpp \
       State.cpp particleGenerator.cpp gen_util.cpp plummer.cpp

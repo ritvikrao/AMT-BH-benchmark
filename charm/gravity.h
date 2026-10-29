@@ -40,6 +40,9 @@ struct SourceLists {
   // from the coordinates so that an append reads one cache line.
   alignas(64) int n[WALK_GROUP_MAX_BUCKETS];
   Node<ForceData> *bucket[WALK_GROUP_MAX_BUCKETS];
+  // Where slot b's sums go: the bucket's particles, or, for a walk another PE
+  // does in the owner's place (Steal.h), that PE's private copy of them.
+  Particle *target[WALK_GROUP_MAX_BUCKETS];
   alignas(64) Real x[WALK_GROUP_MAX_BUCKETS][CAP];
   alignas(64) Real y[WALK_GROUP_MAX_BUCKETS][CAP];
   alignas(64) Real z[WALK_GROUP_MAX_BUCKETS][CAP];
@@ -51,7 +54,7 @@ inline void flushSources(int slot){
   SourceLists &s = sources;
   const int n = s.n[slot];
   if(n == 0) return;
-  Particle *particles = s.bucket[slot]->getParticles();
+  Particle *particles = s.target[slot];
   const int np = s.bucket[slot]->getNumParticles();
   const Real epssq = globalParams.epssq;
   const Real *__restrict sx = s.x[slot];
@@ -105,6 +108,7 @@ inline void bindSources(const WalkGroup &g){
   for(int b = 0; b < g.numBuckets; b++){
     CkAssert(sources.n[b] == 0);
     sources.bucket[b] = g.buckets[b];
+    sources.target[b] = g.buckets[b]->getParticles();
   }
 }
 

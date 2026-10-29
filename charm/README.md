@@ -158,6 +158,8 @@ Options take the form `-<name>=<value>`:
 | `balance` | decomposition weight: `count` (particles) or `cost` (last step's interactions per particle) | `count` |
 | `reuseleaves` | `1`: start each step's decomposition from the last step's leaves; `0`: from the root | 1 |
 | `lbperiod` | migrate TreePieces every N steps (with `+balancer SfcLB`; see [Dynamic load balancing](#dynamic-load-balancing)) | 0 (never) |
+| `steal` | `1`: local walks are idle-time work, done by their PE or stolen by another PE of the same process (see [Work stealing inside a process](#work-stealing-inside-a-process)) | 0 (off) |
+| `stealheavy` | with `-steal=1`, a PE whose particles had more than this multiple of the mean interactions last step leaves its local walks to the others while its remote walk is open | 1.1 |
 | `timers` | phases to time: `all`, `none`, or a comma-separated list | `all` |
 | `output` | path prefix for ParaView snapshots; open `<prefix>.pvd` | none (no output) |
 | `outputfreq` | write a snapshot every Nth step | 1 |
@@ -568,6 +570,58 @@ faster per step, and 1.10x on one process of 120 PEs; it balances in one pass.
 What it cannot reach is decomposition and the particle exchange, which are
 cut by particle count. See MULTINODE.md, "LB".
 
+### Work stealing inside a process
+
+`-steal=1` (off by default) lets the local half of the traversal move between
+the PEs of one process. Each TreePiece's local walks go on a deque instead of
+being run from a `doLocalGravity` message: a PE with nothing in its queue takes
+one of its own groups from the back and walks it in place, or takes a group
+from the front of a TreePiece on another PE of the same process. The thief
+walks the owner's tree through shared memory with its own interaction lists
+(the tree is immutable during the traversal), sums into a private copy of the
+group's particles, and sends the five sums per particle back in one
+`stolenLocalDone` message; the owner adds them in. The owner thus stays the
+only writer of its particles and no lock is taken; the remote walk is
+untouched and drives the critical path, while the local walks fill the gaps on
+whichever PE has them. Stealing never crosses a process boundary. A PE whose
+particles had more than `-stealheavy` times the mean interactions last step
+does no local walks of its own while its remote walk is open, and thieves
+prefer such PEs. The work is done through two `[inline]` entry methods of
+DataManager, `stolenWalk` and `ownIdleWalk`, so Projections shows it as busy
+time under those names. Each queued walk counts as a created message for
+quiescence detection until it has run (`QdCreate`/`QdProcess`), since the idle
+callback that runs it is no message; without that, `Main`'s hang check could
+fire while walks were still queued. With one PE per process there is no one to
+steal from and the idle callbacks are not installed, so `-steal=1` is turned
+off with a notice. Results are identical with stealing on and off, to every
+printed digit of the energies, on one and several processes.
+
+One Delta node, 4M bodies of the issue #7 input, leaf 10, `-ppc=2000`, s/step
+over steps 2-5 (`scripts/campaigns/steal.sh`, `layouts.sh`):
+
+| layout | off | on | gain | local walks taken by another PE |
+|---|---|---|---|---|
+| 1 x 120 | 0.114 | 0.108 | 5% | 17% |
+| 2 x 60 | 0.116 | 0.100 | 14% | 19% |
+| 4 x 30 | 0.111 | 0.101 | 9% | 18% |
+| 8 x 15 | 0.114 | 0.106 | 7% | 19% |
+
+Anvil, same input (medians of steps 1-5): 1 x 120 0.129 -> 0.117, 2 x 60
+0.125 -> 0.109, 4 x 30 0.124 -> 0.113, 8 x 15 0.134 -> 0.117.
+
+With stealing on, coarser TreePieces win, because a PE's remaining imbalance
+is in its remote walk and serving rather than its local walks
+(`scripts/campaigns/ppc.sh`, Delta, 2 x 60): `-ppc` 1000 / 2000 / 4000 / 8000
+/ 16000 gives 0.112 / 0.102 / 0.097 / 0.0945 / 0.108 s/step, against 0.115 for
+`-ppc=2000` without stealing; in 8 x 15 the best is `-ppc=4000` at 0.103.
+`SfcLB` and `-balance=cost` add nothing measurable on top of stealing, at any
+`-ppc`. What stealing cannot move is the slowest PE's remote walk (1.7x the
+mean in 8 x 15) and its serving of other PEs' requests (2x), since both are
+tied to the PE's own tree and cache.
+
+The `[STEAL]` line printed each step gives the walks published, taken by
+another PE, and the idle attempts that found nothing.
+
 ## Input formats
 
 Two are readable, selected with `-format=` or inferred from the file extension
@@ -860,7 +914,7 @@ comparing numbers, those to tolerate, and those already settled.
 Working: distributed tree build and traversal across nodes (verified to 480
 PEs on Delta and 184 on Stampede3), SFC decomposition rebalanced every step and
 weighted by particle count or by measured cost (`-balance`), configurable leaf
-size, energy tracking. The multi-node work and what is still open are in
+size, energy tracking, work stealing of local walks within a process (`-steal`). The multi-node work and what is still open are in
 [MULTINODE.md](MULTINODE.md).
 
 Not yet implemented: repartitioning less often than every step, and

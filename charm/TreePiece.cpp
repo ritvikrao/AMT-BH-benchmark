@@ -2,6 +2,7 @@
 #include "Messages.h"
 #include "DataManager.h"
 #include "Parameters.h"
+#include "Steal.h"
 
 #include <fstream>
 
@@ -112,6 +113,15 @@ void TreePiece::startTraversal(){
 
   localTraversalState.reset(this,numGroups,NULL);
   localTraversalWorker.reset(this,&localTraversalState);
+  if(globalParams.steal){
+    stealRemoteOpened();
+    // The local walks are done from the idle callback -- by this PE when it
+    // has nothing else to do, by another PE of the process otherwise -- so
+    // no doLocalGravity message: the remote walk alone drives the critical
+    // path and the local half fills the gaps on whichever PE has them.
+    stealPublish(this,numGroups);
+    return;
+  }
 
   msg = new (NUM_PRIORITY_BITS) RescheduleMsg;
   *(int *)CkPriorityPtr(msg) = LOCAL_GRAVITY_PRIORITY;
@@ -171,7 +181,45 @@ void TreePiece::localGravityDone(){
   traversalDone();
 }
 
+void TreePiece::doOwnLocalGroup(int g){
+  PE_DIAG_TIME(busyLocal);
+  const WalkGroup &grp = walkGroups[g];
+  localTraversalWorker.setContext(WalkContext(&grp,allBuckets(grp)));
+  trav.gravityWalk(root,&localTraversalWorker,&localTraversalState,allBuckets(grp));
+  localTraversalWorker.endWalk();
+  if(localTraversalState.decrPending(1)) localGravityDone();
+}
+
+// Add what another PE's walk of group g gathered into the group's particles:
+// this PE is the only writer of its particles, so no lock, whatever the
+// state of the group's remote walk.
+void TreePiece::stolenLocalDone(int g, int n, double *sums, CmiUInt8 pn, CmiUInt8 pp, CmiUInt8 oc){
+  const WalkGroup &grp = walkGroups[g];
+  int k = 0;
+  for(int b = 0; b < grp.numBuckets; b++){
+    Particle *p = grp.buckets[b]->getParticles();
+    const int np = grp.buckets[b]->getNumParticles();
+    for(int i = 0; i < np; i++, k++){
+      const double *s = sums + 5*k;
+      p[i].acceleration.x += s[0];
+      p[i].acceleration.y += s[1];
+      p[i].acceleration.z += s[2];
+      p[i].potential += s[3];
+      p[i].cost += s[4];
+    }
+  }
+  CkAssert(k == n);
+#ifdef STATISTICS
+  localTraversalState.numInteractions[0] += pn;
+  localTraversalState.numInteractions[1] += pp;
+  localTraversalState.numInteractions[2] += oc;
+#endif
+  stealStats.lost++;
+  if(localTraversalState.decrPending(1)) localGravityDone();
+}
+
 void TreePiece::remoteGravityDone(){ 
+  if(globalParams.steal && !walkGroups.empty()) stealRemoteClosed();
   traversalDone();
 }
 
