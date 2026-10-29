@@ -149,6 +149,12 @@ void Main::setParameters(CkArgMsg *m){
   CkPrintf("reuseleaves: %d\n", (int)globalParams.reuseLeaves);
 
   globalParams.steal = params.getiparam("steal", DEFAULT_STEAL, table) != 0;
+  // The idle callbacks that run the local walks are installed only in a
+  // process of more than one PE (Steal.cpp); with one, nothing would run them.
+  if(globalParams.steal && CkMyNodeSize() == 1){
+    CkPrintf("steal: one PE per process, nothing to steal from; off\n");
+    globalParams.steal = false;
+  }
   CkPrintf("steal: %d\n", (int)globalParams.steal);
   globalParams.stealHeavy = params.getrparam("stealheavy", DEFAULT_STEAL_HEAVY, table);
   CkPrintf("stealheavy: %g\n", globalParams.stealHeavy);

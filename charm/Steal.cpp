@@ -17,6 +17,9 @@
 extern CProxy_TreePiece treePieceProxy;
 extern CProxy_DataManager dataManagerProxy;
 extern Parameters globalParams;
+// Charm++'s quiescence counters (ck.C); see stealPublish.
+void QdCreate(int n);
+void QdProcess(int n);
 
 thread_local StealStats stealStats;
 
@@ -144,6 +147,7 @@ void stealIdle(void *){
       // Through an inline entry method of this PE's DataManager, so that the
       // walk is traced: the idle callback itself is outside any entry method.
       dataManagerProxy[CkMyPe()].ownIdleWalk(handle(tp), g);
+      QdProcess(1);
       return;
     }
   }
@@ -171,6 +175,7 @@ void stealIdle(void *){
       table->queued.fetch_sub(1, std::memory_order_relaxed);
       lk.unlock();
       dataManagerProxy[CkMyPe()].stolenWalk(handle(tp), g);
+      QdProcess(1);
       return;
     }
   }
@@ -213,6 +218,10 @@ void stealPublish(TreePiece *tp, int numGroups){
   if(numGroups > 0) pq.pieces.push_back(tp);
   table->queued.fetch_add(numGroups, std::memory_order_relaxed);
   stealStats.published += numGroups;
+  // A queued walk is work no message stands for: count it as created until
+  // the PE that runs it counts it processed (stealIdle), so quiescence
+  // detection (Main's hang check) does not fire while walks are waiting.
+  QdCreate(numGroups);
 }
 
 #include "Traversal_defs.h"

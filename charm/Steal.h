@@ -30,7 +30,10 @@
 // early by their owner. (Measured before this: thieves got 16% of the local
 // walks, because the owners had done the rest by the time anyone was idle.) One lock per PE covers the deques of its
 // TreePieces and the list of those that still have work. Stealing stays
-// inside the process: the owner's tree is only addressable there.
+// inside the process: the owner's tree is only addressable there, and with
+// one PE per process -steal is turned off (Main::setParameters). Each queued
+// walk counts as a created message for quiescence detection until it has
+// run, since the idle callback that runs it is no message.
 
 #include "charm++.h"
 

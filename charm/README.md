@@ -588,8 +588,13 @@ particles had more than `-stealheavy` times the mean interactions last step
 does no local walks of its own while its remote walk is open, and thieves
 prefer such PEs. The work is done through two `[inline]` entry methods of
 DataManager, `stolenWalk` and `ownIdleWalk`, so Projections shows it as busy
-time under those names. Results are identical with stealing on and off, to
-every printed digit of the energies, on one and several processes.
+time under those names. Each queued walk counts as a created message for
+quiescence detection until it has run (`QdCreate`/`QdProcess`), since the idle
+callback that runs it is no message; without that, `Main`'s hang check could
+fire while walks were still queued. With one PE per process there is no one to
+steal from and the idle callbacks are not installed, so `-steal=1` is turned
+off with a notice. Results are identical with stealing on and off, to every
+printed digit of the energies, on one and several processes.
 
 One Delta node, 4M bodies of the issue #7 input, leaf 10, `-ppc=2000`, s/step
 over steps 2-5 (`scripts/campaigns/steal.sh`, `layouts.sh`):
