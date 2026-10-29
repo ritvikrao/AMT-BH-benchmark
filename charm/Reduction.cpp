@@ -2,6 +2,7 @@
 #include "OrientedBox.h"
 #include "defines.h"
 #include "ActiveBinInfo.h"
+#include <vector>
 
 CkReduction::reducerType BoundingBoxGrowReductionType;
 CkReduction::reducerType NodeDescriptorReductionType;
@@ -18,17 +19,44 @@ CkReductionMsg *BoundingBoxGrowReduction(int nmsgs, CkReductionMsg **msgs){
   return CkReductionMsg::buildNew(sizeof(BoundingBox),&bb);
 }
 
+// Merge SparseBin lists, each in bin order and possibly empty, as a k-way
+// merge of sorted lists: a cursor per input, the smallest bin next, equal
+// bins combined with NodeDescriptor::grow (order-independent). The cost is
+// proportional to the entries, not to the number of bins: the bins are the
+// TreePieces, which at scale run to hundreds of thousands, while a PE's list
+// has a few dozen entries and a process root's a few hundred.
 CkReductionMsg *NodeDescriptorReduction(int nmsgs, CkReductionMsg **msgs){
-  int numElements = (msgs[0]->getSize()/sizeof(NodeDescriptor));
-
-  for(int i = 0; i < numElements; i++){
-    NodeDescriptor *zeroth = ((NodeDescriptor*)msgs[0]->getData())+i;
-    for(int j = 1; j < nmsgs; j++){
-      const NodeDescriptor &source = *(((NodeDescriptor *)msgs[j]->getData())+i);
-      zeroth->grow(source);
-    }
+  std::vector<const SparseBin *> cur(nmsgs), end(nmsgs);
+  size_t total = 0;
+  for(int j = 0; j < nmsgs; j++){
+    const int n = msgs[j]->getSize()/sizeof(SparseBin);
+    cur[j] = (const SparseBin *)msgs[j]->getData();
+    end[j] = cur[j] + n;
+    total += n;
   }
-  return CkReductionMsg::buildNew(msgs[0]->getSize(),msgs[0]->getData());
+  std::vector<SparseBin> out;
+  out.reserve(total);
+  while(true){
+    int b = -1;
+    for(int j = 0; j < nmsgs; j++){
+      if(cur[j] != end[j] && (b < 0 || cur[j]->bin < b)) b = cur[j]->bin;
+    }
+    if(b < 0) break;
+    SparseBin merged;
+    merged.bin = b;
+    bool first = true;
+    for(int j = 0; j < nmsgs; j++){
+      if(cur[j] != end[j] && cur[j]->bin == b){
+        if(first){ merged.d = cur[j]->d; first = false; }
+        else merged.d.grow(cur[j]->d);
+        cur[j]++;
+        CkAssert(cur[j] == end[j] || cur[j]->bin > b);
+      }
+    }
+    out.push_back(merged);
+  }
+  return CkReductionMsg::buildNew(sizeof(SparseBin)*out.size(),
+                                  out.empty() ? NULL : out.data());
 }
 
 CkReductionMsg *DtReduction(int nmsgs, CkReductionMsg **msgs){

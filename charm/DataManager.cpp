@@ -519,16 +519,47 @@ void DataManager::refineToLeaves(Node<NodeDescriptor> *node, int lo, int hi){
 
 void DataManager::sendHistogram(){
 
+  // Only the bins this PE has particles in (see SparseBin); the empty ones
+  // are implied, and PE 0 fills them in.
+  const int numBins = activeBins.getNumCounts();
+  const NodeDescriptor *counts = activeBins.getCounts();
+  histogramContribution.clear();
+  for(int i = 0; i < numBins; i++){
+    if(counts[i].numParticles == 0) continue;
+    SparseBin e;
+    e.bin = i;
+    e.d = counts[i];
+    histogramContribution.push_back(e);
+  }
   CkCallback cb(CkIndex_DataManager::receiveHistogram(NULL),0,this->thisgroup);
-  contribute(sizeof(NodeDescriptor)*activeBins.getNumCounts(),activeBins.getCounts(),NodeDescriptorReductionType,cb);
+  contribute(sizeof(SparseBin)*histogramContribution.size(),
+             histogramContribution.empty() ? NULL : histogramContribution.data(),
+             NodeDescriptorReductionType,cb);
   activeBins.reset();
 }
 
 // executed on PE 0
 void DataManager::receiveHistogram(CkReductionMsg *msg){
 
-  int numRecvdBins = msg->getSize()/sizeof(NodeDescriptor);
-  NodeDescriptor *descriptors = (NodeDescriptor *)msg->getData();
+  CkVec<pair<Node<NodeDescriptor>*,bool> > *active = activeBins.getActive();
+  const int numRecvdBins = active->length();
+
+  // Expand to one descriptor per active bin; a bin nobody listed is empty
+  // everywhere (the descriptor ActiveBinInfo::addNewNode gives an empty node).
+  histogramDense.resize(numRecvdBins);
+  for(int i = 0; i < numRecvdBins; i++){
+    Node<NodeDescriptor> *nd = (*active)[i].first;
+    const Key plk = Node<NodeDescriptor>::getParticleLevelKey(nd);
+    histogramDense[i] = NodeDescriptor(0, nd->getKey(), plk, plk, 0.0);
+  }
+  const int numEntries = msg->getSize()/sizeof(SparseBin);
+  const SparseBin *entries = (const SparseBin *)msg->getData();
+  for(int k = 0; k < numEntries; k++){
+    CkAssert(entries[k].bin >= 0 && entries[k].bin < numRecvdBins);
+    CkAssert(entries[k].d.nodeKey == histogramDense[entries[k].bin].nodeKey);
+    histogramDense[entries[k].bin].grow(entries[k].d);
+  }
+  NodeDescriptor *descriptors = histogramDense.data();
 
   // XXX remove this and make a refine function for ActiveBinInfo
   CkVec<int> binsToRefine;
@@ -537,9 +568,6 @@ void DataManager::receiveHistogram(CkReductionMsg *msg){
   binsToRefine.length() = 0;
 
   int particlesHistogrammed = 0;
-
-  CkVec<pair<Node<NodeDescriptor>*,bool> > *active = activeBins.getActive();
-  CkAssert(numRecvdBins == active->length());
 
   // What a bin weighs. By count, its particles; by cost, its particles' summed
   // cost from the last traversal, scaled so that the whole histogram weighs
@@ -1107,7 +1135,6 @@ void DataManager::buildTree(){
   int rootDepth = 0;
   root = new Node<ForceData>(Key(1),rootDepth,myParticles.getVec(),myNumParticles);
   root->setOwners(0,numTreePieces-1);
-  nodeTable[Key(1)] = root;
   if(myNumParticles == 0){
     return;
   }
@@ -1175,7 +1202,6 @@ void DataManager::makeMoments(){
   if(root == NULL) return;
 
   MomentsWorker mw(submittedParticles,
-                   nodeTable,
                    myBuckets,
                    tpCounts,
                    emptyRemoteLeaves
@@ -1200,11 +1226,23 @@ void DataManager::settleEmptyRemoteLeaves(){
   emptyRemoteLeaves.length() = 0;
 }
 
+// The node of this PE's tree with key k, found by descending from the root
+// along the key's digits, or NULL if the tree has no such node. This used to
+// be a std::map<Key, Node *> filled by the moments walk: one allocation and
+// an O(log n) insertion per node of the tree every step, and as many frees
+// to clear it in advance(). The keys asked for -- by requestMoments,
+// requestNode and requestParticles from other PEs, by receiveMoments for
+// our own Remote leaves -- are all nodes of the local tree, and the descent
+// costs about what the map lookup did.
 Node<ForceData> *DataManager::lookupNode(Key k){
-  map<Key,Node<ForceData>*>::iterator it;
-  it = nodeTable.find(k);
-  if(it == nodeTable.end()) return NULL;
-  else return it->second;
+  if(root == NULL) return NULL;
+  const int depth = Node<ForceData>::getDepthFromKey(k);
+  Node<ForceData> *node = root;
+  for(int level = depth-1; level >= 0; level--){
+    if(node->getNumChildren() == 0) return NULL;
+    node = node->getChild((int)((k >> (LOG_BRANCH_FACTOR*level)) & (BRANCH_FACTOR-1)));
+  }
+  return node->getKey() == k ? node : NULL;
 }
 
 void DataManager::requestMoments(Key k, int replyTo){
@@ -1425,9 +1463,8 @@ void DataManager::requestParticles(RequestMsg *msg){
   RRDEBUG("(%d) REPLY particles key %lu to %d\n", 
           CkMyPe(), msg->key, msg->replyTo);
 
-  map<Key,Node<ForceData>*>::iterator it = nodeTable.find(msg->key);
-  CkAssert(it != nodeTable.end());
-  Node<ForceData> *bucket = it->second;
+  Node<ForceData> *bucket = lookupNode(msg->key);
+  CkAssert(bucket != NULL);
   CkAssert(bucket->getType() == Bucket);
 
   Particle *data = bucket->getParticles();
@@ -1492,9 +1529,8 @@ void DataManager::requestNode(RequestMsg *msg){
           CkMyPe(), msg->key, msg->replyTo);
 
 
-  map<Key,Node<ForceData>*>::iterator it = nodeTable.find(msg->key);
-  CkAssert(it != nodeTable.end());
-  Node<ForceData> *node = it->second;
+  Node<ForceData> *node = lookupNode(msg->key);
+  CkAssert(node != NULL);
 
   if(node->getNumChildren() == 0){
     CkPrintf("[%d] children of leaf node %lu type %s requested!\n", CkMyPe(), node->getKey(), NodeTypeString[node->getType()].c_str());
@@ -1740,7 +1776,6 @@ void DataManager::advance(CkReductionMsg *msg){
 
   firstSplitterRound = true;
   freeTree();
-  nodeTable.clear();
   XD_LAP(freetree);
 
   CkAssert(activeBins.getNumCounts() == 0);
@@ -1986,14 +2021,14 @@ void DataManager::printTree(){
 
 void DataManager::addBucketNodeInteractions(Key k, CmiUInt8 pn){
 #ifdef CHECK_NUM_INTERACTIONS
-  Node<ForceData> *node = nodeTable[k];
+  Node<ForceData> *node = lookupNode(k);
   node->addNodeInteractions(pn);
 #endif
 }
 
 void DataManager::addBucketPartInteractions(Key k, CmiUInt8 pp){
 #ifdef CHECK_NUM_INTERACTIONS
-  Node<ForceData> *node = nodeTable[k];
+  Node<ForceData> *node = lookupNode(k);
   node->addPartInteractions(pp);
 #endif
 }

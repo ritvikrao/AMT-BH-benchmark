@@ -118,6 +118,15 @@ struct NodeDescriptor {
   }
 };
 
+// One entry of a PE's histogram contribution: bin index (into the active-bin
+// list, the same on every PE) and this PE's descriptor for it. A PE's
+// particles fall into a few dozen of the -p bins, so listing only those turns
+// a 160 KB message per PE (at -p 4016) into a few KB.
+struct SparseBin {
+  int bin;
+  NodeDescriptor d;
+};
+
 class TreePiece;
 struct ParticleMsg;
 struct TreePieceDescriptor {

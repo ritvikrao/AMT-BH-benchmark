@@ -114,6 +114,10 @@ class DataManager : public CBase_DataManager {
   // Warn once, not once per decomposition round, when -p runs out.
   bool warnedTreePieceBudget;
   ActiveBinInfo<NodeDescriptor> activeBins;
+  // Histogram contribution (sendHistogram) and, on PE 0, the merged
+  // histogram per bin (receiveHistogram); members to reuse the storage.
+  std::vector<SparseBin> histogramContribution;
+  std::vector<NodeDescriptor> histogramDense;
 
   TreePieceCounter localTreePieces;
   int numLocalTreePieces;
@@ -165,7 +169,6 @@ class DataManager : public CBase_DataManager {
   // from particles present on this PE
   bool doneTreeBuild;
   //CkVec<RequestedMomentsDescriptor> requestedMoments;
-  map<Key,Node<ForceData>*> nodeTable;
 
   map<Key,CkVec<int> > pendingMoments;
 
