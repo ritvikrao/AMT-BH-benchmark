@@ -1,0 +1,82 @@
+Decomposition round trips, exchange, and traversal layout, one node, 2026-10-28.
+Branches steal (PR #2), exchange (PR #3), exchange-followup (PR #4) on fork
+ritvikrao/AMT-BH-benchmark. Charm++ recharm 4ad7320be. Issue #7 4M input,
+leaf 10, theta 0.5, -steal=1, -ppc=2000 (4016 TreePieces) unless noted.
+Delta: cpu-interactive nodes; Anvil: standard partition. Energies identical to
+every printed digit between old and new binaries in every run below, on both
+machines and on the laptop (100k Plummer, 1, 2 and 3 processes, SfcLB).
+Laptop-only trace analysis notes and scripts: ~/software/barnesHut/traces/analysis
+(Kale's laptop); the tables here are the parts that matter for the code.
+
+1. Particle exchange in place (68d5545, PR #3, merged)
+   Particles bound for their own PE are kept, arrivals merged with
+   std::inplace_merge, decomposition sort is std::sort (CkVec::quickSort ended
+   in a quadratic bubble pass on nearly sorted input: 12% of cycles in perf).
+   Anvil 21737071 (a363), Delta 23295876 (cn124); medians over steps 2-4, two
+   reps; s/step old -> new:
+     layout         Anvil                 Delta
+     1x120          0.1176 -> 0.1090      0.1068 -> 0.0968
+     2x60           0.1086 -> 0.0983      0.1011 -> 0.0898
+     8x15           0.1174 -> 0.1049      0.1045 -> 0.0942
+     2x60 ppc8000   0.1060 -> 0.0959      0.0977 -> 0.0855
+   Decomposition and tree build roughly halve; traversal unchanged.
+
+2. Where the decomposition's time went after that (Delta 2x60 trace, job
+   23284913, code cd43738, steady steps, ms after PE 0's advance begins)
+     recvUnivBoundingBox ends, first / last PE             9.2 / 12.3
+     last contribution reaches process root; its merge     12.05, 1.66 ms
+     PE 0 merges its 60 messages                            13.80-15.57
+     receiveHistogram on PE 0                               15.57-16.27
+     RangeMsg (80 KB) delivered one copy per PE, serially   21 us per PE
+     wait from receiveParticles end to first gravity EP     median 4.1 ms
+   The reduction tree is flat within a process: each process root merged 59
+   messages of 160 KB (40-byte descriptor x 4016 bins) after the last arrived.
+   Per PE per step the fetch protocol itself costs: ~2870 requests served in
+   5.5 ms (1.9 us each; the README's 18 us is from Stampede3), reply handling
+   3.5 ms, 3.3 MB of replies received.
+
+3. Sparse histogram contribution (05c4f84, PR #4)
+   A PE contributes descriptors only for bins it has particles in (a few dozen
+   of 4016); the reducer merges sparse lists; PE 0 expands to dense.
+   Step ratio to 68d5545 (Delta 23298866 cn059 / 23299253 cn051; Anvil
+   21740860 a434 / 21741251 a448; 2 reps, 4 reps at 8x15):
+     1x120 0.97 / 0.96   2x60 0.97 / 0.98   8x15 1.00 / 0.97   ppc8000 1.00 / 1.00
+   Gains where the per-process merge was large; nothing at 8x15 (15
+   contributions per root) or with 1016 bins.
+
+4. Node table removed (395858c, PR #4)
+   nodeTable (std::map filled with every node each step) replaced by a key
+   descent from the root. 8x15, 4 reps: tree build 0.84 on both machines,
+   step 0.967 (Delta) / 0.971 (Anvil). Net two lines fewer.
+
+5. Tried and set aside (branch exchange-extra on the fork, measurements in
+   the commit messages; Kale's rule: no mechanism for a small gain)
+   - RangeMsg through a nodegroup, one copy per process (aaf8269): 1x120
+     0.95/0.94, 2x60 0.98, 8x15 0.99/0.98 (round 1's 8x15 slowdown was noise).
+   - Interaction-list capacity -DSOURCE_CAP (e41ed83): 64 vs 128 1.00-1.02,
+     32 vs 128 1.03-1.05 on every layout, both machines. Never faster.
+   - Node layout, walk fields first, alignas(64), 192 B (bab2d3e): 0.98-1.02.
+   Both layout hypotheses from the perf analysis are therefore unsupported.
+   - Per-PE phase split (-DEXCHANGE_DIAG, PE 0, 33k particles/PE, ms): kdk
+     0.55, free cached replies 1.3-1.8 (Anvil 8x15 up to 2.7), free tree 0.3,
+     Morton hash 1.0-1.7, sort 1.1-1.8, bins 0.7-1.3, flush 0.25, build
+     1.4-2.1, moments 1.4-2.1. Each 1-2% of the step; none taken up.
+
+6. Not started, by decision (Kale, 2026-10-28 evening)
+   - Process-shared tree cache (paratreet2 treecache library) or direct
+     reads of co-located PEs' trees: equivalent on one process (no fetch
+     either way; each PE adds its nodes to the common tree, sets moments
+     upward, then a process-level barrier before any walk starts, so no walk
+     waits for an in-process node). The shared-tree structure is the one to
+     adopt when multi-node runs need it: it also removes duplicate fetches
+     among the PEs of a process. Worth measuring first: distinct requested
+     keys per process vs total requests, in one 8x15 run.
+   - Multi-level fetch depth (-chunkdepth) and the octree: Ritvik/Aditya.
+     Note the reply sizes: binary depth 4 = 2+4+8+16 = 30 nodes (4.8 KB),
+     octree depth 2 = 8+64 = 72 nodes (11.5 KB); the requested node itself
+     is not in the reply.
+   - Stealing stays within a process; no multi-node stealing experiments now.
+
+Best one-node configuration now: 2x60 -steal=1 -ppc=8000, 0.0855 s/step on
+Delta and 0.0959 on Anvil before PR #4 (Anvil is ~10% slower than Delta in
+every layout).

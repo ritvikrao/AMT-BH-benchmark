@@ -76,6 +76,18 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
       grown past the target and merging light sibling families to make room.
       4M, one node, both together: 1.11x (8x15), 1.13x (8x15 SfcLB), 1.33x
       (1x120); energies identical. Faster particle sorts were tried and were slower.
+- [x] **S** Work stealing of local walks inside a process (`-steal=1`, off by
+      default; PR #2 on the fork, merged 2026-10-28): 4M one node 5-14% faster,
+      best with coarse TreePieces (`-ppc=8000` on 2x60); SfcLB adds nothing on
+      top of it (README "Work stealing"). Stays within a process by decision.
+- [x] **X** Exchange in place and decomposition round trips (PR #3 merged, PR #4
+      open, 2026-10-28): self-destined particles stay put, std::sort, sparse
+      histogram contribution, node table removed. 4M one node: step 0.89-0.93
+      from the exchange, a further 0.97 at 1x120/2x60 from the histogram, tree
+      build 0.84 from the node table ([results](results/decomp-1node-2026-10-28.txt)).
+      Set aside with measurements: shared ranges, list capacity, node layout.
+      Not started by decision: the process-shared tree cache (needed for many
+      nodes; equivalent to direct in-process reads on one process).
 - [x] **2** Correctness matrix on 1, 2 and 4 nodes passes
       ([results](results/correctness-2026-10-14.txt)). `run.sh` takes `NODES`.
 - [x] **3a** Particle exchange: DM-to-DM with exact counts (bbce8b0). Verified on
@@ -102,6 +114,7 @@ already runs distributed. Needs to run distributed on CPUs (GPU opt-in)."
 
 | date | machine | what | commit | job |
 |---|---|---|---|---|
+| 2026-10-28 | Delta and Anvil, 1 node | **Exchange in place, sparse histogram, node table removed**: 4M energies identical to 68d5545 and to 91ab660 on 1x120, 2x60, 8x15 and 2x60 ppc 8000, 2-4 reps each, with `-steal=1`; laptop 100k identical in 1, 2 and 3 processes, with SfcLB ([results](results/decomp-1node-2026-10-28.txt)) | 68d5545, 05c4f84, 395858c | Delta 23295876, 23298866, 23299253; Anvil 21737071, 21740860, 21741251 |
 | 2026-10-27 | Delta, 1 node | **Leaves reused across steps** (`-reuseleaves=1`): 4M energies identical to fix 1 alone on 8x15 and 1x120, with and without SfcLB, and with `-balance=cost` vs `-reuseleaves=0`; 400k with forced merges and splits identical ([results](results/decomp-1node-2026-10-27.txt)) | 1430dd3 | 23255462 |
 | 2026-10-27 | Delta, 1 node | **Histogram rounds** carry unsplit bins' descriptors: 4M energies identical old vs new on 8x15 and 1x120, with and without SfcLB; 400k by count and by cost identical ([results](results/decomp-1node-2026-10-27.txt)) | this commit | 23253180 |
 | 2026-09-10 | Delta, 1 node | 1-120 cores, both layouts, 138 runs ([report](results/REPORT-1node-2026-09-10.txt)) | 2cdf1d5 | 21945686 |
